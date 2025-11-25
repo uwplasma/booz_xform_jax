@@ -37,7 +37,7 @@ try:
     # regression tests compare against double precision reference
     # results.  JAX defaults to single precision on many platforms; the
     # following flag ensures that 64‑bit floats are available.
-    from jax.config import config as _jax_config
+    from jax import config as _jax_config
     _jax_config.update("jax_enable_x64", True)
 except ImportError as e:  # pragma: no cover
     raise ImportError(
