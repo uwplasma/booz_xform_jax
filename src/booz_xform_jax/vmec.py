@@ -167,6 +167,11 @@ def init_from_vmec(self, *args, s_in: Optional[_np.ndarray] = None) -> None:
     # Nyquist arrays have shape (mnmax_nyq, ns_full)
     self.mnmax_nyq = bmnc0.shape[0]
     # Copy non-Nyquist arrays, stripping axis
+    print(f"Initializing BoozXform with {ns_in} surfaces (excluding axis)")
+    print(f"  mnmax = {self.mnmax}, mnmax_nyq = {self.mnmax_nyq}")
+    print(f"  asymmetry flag = {self.asym}")
+    print(f"  ns_full = {ns_full}")
+    print(f"  rmnc0 shape: {rmnc0.shape}")
     self.rmnc = strip_axis(rmnc0, ns_full)
     self.zmns = strip_axis(zmns0, ns_full)
     self.lmns = strip_axis(lmns0, ns_full)
@@ -289,7 +294,7 @@ def read_wout(self, filename: str, flux: bool = False) -> None:
     bsubvmnc0 = _np.asarray(ds.variables['bsubvmnc'][:])
     bsubvmns0 = _np.asarray(ds.variables['bsubvmns'][:]) if self.asym else _np.zeros_like(bmnc0)
     # Determine number of radial surfaces
-    ns = rmnc0.shape[1]
+    ns = rmnc0.shape[0]
     # Initialize variables for flux profiles
     phip0 = chi0 = pres0 = phi0 = None
     if flux:
