@@ -362,6 +362,11 @@ def read_wout(self, filename: str, flux: bool = False) -> None:
         use_scipy = True
     else:
         raise RuntimeError("No NetCDF reader available. Install netCDF4 or SciPy.")
+    
+    if self.verbose > 0:
+        print(f"[booz_xform_jax] Reading wout file: {filename}")
+        print(f"[booz_xform_jax]   Using NetCDF reader: {'netCDF4' if not use_scipy else 'scipy.io.netcdf'}")
+
     # Read symmetry flag
     # In netCDF4 dimensions are names with double underscores
     lasym_name = 'lasym__logical__'
@@ -386,6 +391,11 @@ def read_wout(self, filename: str, flux: bool = False) -> None:
     self.mpol_nyq = int(self.xm_nyq[-1])
     self.ntor_nyq = int(self.xn_nyq[-1] // self.nfp)
     self.ns_vmec = int(ds.variables['ns'][...].item())
+
+    if self.verbose > 0:
+        print(f"[booz_xform_jax]   mpol={self.mpol}, ntor={self.ntor}, mnmax={self.mnmax}")
+        print(f"[booz_xform_jax]   mpol_nyq={self.mpol_nyq}, ntor_nyq={self.ntor_nyq}, mnmax_nyq={self.mnmax_nyq}")
+
     # Read non-Nyquist Fourier coefficients (shape (mnmax, ns))
     rmnc0 = _np.asarray(ds.variables['rmnc'][:])
     rmns0 = _np.asarray(ds.variables['rmns'][:]) if self.asym else _np.zeros_like(rmnc0)

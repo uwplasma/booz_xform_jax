@@ -44,6 +44,8 @@ def write_boozmn(self, filename: str) -> None:
     # Ensure run() has been called
     if self.bmnc_b is None:
         raise RuntimeError("run() must be called before write_boozmn()")
+    if self.verbose > 0:
+        print(f"[booz_xform_jax] Writing boozmn file: {filename}")
     # Prepare sizes
     ns_in_plus_1 = int(self.ns_in) + 1
     mnboz = int(self.mnboz)
@@ -156,6 +158,8 @@ def write_boozmn(self, filename: str) -> None:
         ds.createVariable('gmns_b', 'f8', dims)[:, :] = gmns_b
     # Close file
     ds.close()
+    if self.verbose > 0:
+        print(f"[booz_xform_jax] Finished writing {filename}")
     return None
 
 
@@ -183,6 +187,8 @@ def read_boozmn(self, filename: str) -> None:
             "The netCDF4 package is required to read boozmn files. "
             "Install it via 'pip install netCDF4'"
         ) from e
+    if self.verbose > 0:
+        print(f"[booz_xform_jax] Reading boozmn file: {filename}")
     with nc.Dataset(filename, 'r') as ds:
         # Symmetry flag
         self.asym = bool(ds.variables['lasym__logical__'][...].item())
@@ -246,4 +252,6 @@ def read_boozmn(self, filename: str) -> None:
             self.s_in = half_grid
         # Set s_b for selected surfaces
         self.s_b = _np.asarray(self.s_in)[self.compute_surfs]
+    if self.verbose > 0:
+        print("[booz_xform_jax] Finished reading boozmn file")
     return None

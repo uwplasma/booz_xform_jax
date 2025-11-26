@@ -412,6 +412,11 @@ class BoozXform:
                  Fourier coefficients B_{m,n}, R_{m,n}, Z_{m,n}, nu_{m,n},
                  and the Boozer Jacobian harmonics.
         """
+        if self.verbose > 0:
+            print("[booz_xform_jax] Starting Boozer transform")
+            print(f"[booz_xform_jax] compute_surfs (0-based indices): {self.compute_surfs}")
+            print(f"[booz_xform_jax] mboz={self.mboz}, nboz={self.nboz}")
+
         if self.rmnc is None or self.bmnc is None:
             raise RuntimeError("VMEC data must be initialised before running the transform")
 
@@ -448,12 +453,15 @@ class BoozXform:
             self._prepare_mode_lists()
         # Set up grids
         self._setup_grids()
-        ntheta = self._ntheta
-        nzeta = self._nzeta
+
+        if self.verbose > 0:
+            print(f"[booz_xform_jax] Grid resolution:")
+            print(f"    ntheta={self._ntheta}, nzeta={self._nzeta}, total={self._n_theta_zeta}")
+            print(f"    nfp={self.nfp}, ns_b={len(self.compute_surfs)}")
+
         n_theta_zeta = self._n_theta_zeta
         theta_grid = self._theta_grid
         zeta_grid = self._zeta_grid
-        nu2_b = self._nu2_b  # 1-based index in the C++ code
 
         # Precompute trig tables for the VMEC (non-Nyquist) spectrum:
         mmax_non = int(_np.max(_np.abs(self.xm)))
@@ -497,8 +505,15 @@ class BoozXform:
         xm_nyq_arr = jnp.asarray(self.xm_nyq, dtype=jnp.int32)
         xn_nyq_arr = jnp.asarray(self.xn_nyq, dtype=jnp.int32)
 
+        if self.verbose > 0:
+            print("                   |        outboard (theta=0)      |      inboard (theta=pi)      |")
+            print("thread js_b js zeta| |B|input  |B|Boozer    Error   | |B|input  |B|Boozer    Error |")
+            print("------------------------------------------------------------------------------------")
+
         # Loop over surfaces js_b:
         for js_b, js in enumerate(self.compute_surfs):
+            if self.verbose > 1:
+                print(f"[booz_xform_jax] Solving surface js_b={js_b}, js={js}")
             # ---------------------------
             # Work arrays (length n_theta_zeta)
             # ---------------------------
@@ -618,6 +633,25 @@ class BoozXform:
             # Boozer angles from eq (3):
             theta_B = theta_grid + lam + this_iota * nu
             zeta_B = zeta_grid + nu
+
+            if self.verbose > 0:
+                # Outboard = theta=0 slice
+                idx_ob = jnp.arange(0, self._nzeta)
+                # Inboard = theta = pi slice
+                idx_ib = jnp.arange((self._nu2_b - 1) * self._nzeta, self._nu2_b * self._nzeta)
+
+                B_in_ob = float(jnp.mean(bmod[idx_ob]))
+                B_bz_ob = float(jnp.mean(bmod[idx_ob] * dB_dvmec[idx_ob]))
+                err_ob = B_bz_ob - B_in_ob
+
+                B_in_ib = float(jnp.mean(bmod[idx_ib]))
+                B_bz_ib = float(jnp.mean(bmod[idx_ib] * dB_dvmec[idx_ib]))
+                err_ib = B_bz_ib - B_in_ib
+
+                print(f"  {js_b:4d} {js:4d}    0   "
+                    f"{B_in_ob:10.6f} {B_bz_ob:10.6f} {err_ob:10.6f}   "
+                    f"{B_in_ib:10.6f} {B_bz_ib:10.6f} {err_ib:10.6f}")
+
 
             # Derivatives of nu:
             dnu_dze = one_over_GI * (dw_dze - Boozer_I[js_b] * dlam_dze)
@@ -754,4 +788,6 @@ class BoozXform:
                 )
             current.add(idx)
         self.compute_surfs = sorted(current)
+        if self.verbose > 0:
+            print(f"[booz_xform_jax] Registered surfaces: {self.compute_surfs}")
         return None
