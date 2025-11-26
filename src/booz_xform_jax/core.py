@@ -202,7 +202,7 @@ class BoozXform:
     # VMEC parameters read from the wout file
     nfp: int = 1
     asym: bool = False
-    verbose: int = 0
+    verbose: int = 1
     mpol: int = 0
     ntor: int = 0
     mnmax: int = 0
@@ -634,6 +634,14 @@ class BoozXform:
             theta_B = theta_grid + lam + this_iota * nu
             zeta_B = zeta_grid + nu
 
+            # Derivatives of nu:
+            dnu_dze = one_over_GI * (dw_dze - Boozer_I[js_b] * dlam_dze)
+            dnu_dth = one_over_GI * (dw_dth - Boozer_I[js_b] * dlam_dth)
+
+            # Eq (12):
+            dB_dvmec = (1.0 + dlam_dth) * (1.0 + dnu_dze) + \
+                       (this_iota - dlam_dze) * dnu_dth
+            
             if self.verbose > 0:
                 # Outboard = theta=0 slice
                 idx_ob = jnp.arange(0, self._nzeta)
@@ -651,15 +659,6 @@ class BoozXform:
                 print(f"  {js_b:4d} {js:4d}    0   "
                     f"{B_in_ob:10.6f} {B_bz_ob:10.6f} {err_ob:10.6f}   "
                     f"{B_in_ib:10.6f} {B_bz_ib:10.6f} {err_ib:10.6f}")
-
-
-            # Derivatives of nu:
-            dnu_dze = one_over_GI * (dw_dze - Boozer_I[js_b] * dlam_dze)
-            dnu_dth = one_over_GI * (dw_dth - Boozer_I[js_b] * dlam_dth)
-
-            # Eq (12):
-            dB_dvmec = (1.0 + dlam_dth) * (1.0 + dnu_dze) + \
-                       (this_iota - dlam_dze) * dnu_dth
 
             # ---------------------------
             # Boozer trig tables on (theta_B, zeta_B)
