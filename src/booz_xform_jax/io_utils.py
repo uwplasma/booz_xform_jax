@@ -57,18 +57,17 @@ def write_boozmn(self, filename: str) -> None:
     iota_b[1:] = _np.asarray(self.iota)
     buco_b[1:] = _np.asarray(self.Boozer_I_all)
     bvco_b[1:] = _np.asarray(self.Boozer_G_all)
-    # Helper to build profiles
-    def make_profile(arr: Optional[jnp.ndarray]) -> _np.ndarray:
-        prof = _np.zeros(ns_in_plus_1)
+    # Helper to build profiles only if present
+    profiles: dict[str, _np.ndarray] = {}
+    def add_profile(name: str, arr: Optional[jnp.ndarray]) -> None:
         if arr is not None:
+            prof = _np.zeros(ns_in_plus_1)
             prof[1:] = _np.asarray(arr)
-        return prof
-    profiles = {
-        'phip_b': make_profile(self.phip),
-        'chi_b': make_profile(self.chi),
-        'pres_b': make_profile(self.pres),
-        'phi_b': make_profile(self.phi),
-    }
+            profiles[name] = prof
+    add_profile('phip_b', self.phip)
+    add_profile('chi_b',  self.chi)
+    add_profile('pres_b', self.pres)
+    add_profile('phi_b',  self.phi)
     # Spectral arrays need to be transposed to shape (pack_rad, mn_mode)
     bmnc_b = _np.asarray(self.bmnc_b).T
     rmnc_b = _np.asarray(self.rmnc_b).T
@@ -239,10 +238,12 @@ def read_boozmn(self, filename: str) -> None:
         # Derive Boozer I and G on selected surfaces
         self.Boozer_I = _np.asarray(self.Boozer_I_all)[self.compute_surfs]
         self.Boozer_G = _np.asarray(self.Boozer_G_all)[self.compute_surfs]
-        # If s_in is not already defined (i.e., we haven't run init_from_vmec), create a default
+        # If s_in is not already defined (i.e., we haven't run init_from_vmec),
+        # reconstruct the same half-grid used in init_from_vmec:
         if self.s_in is None:
-            full_grid = _np.linspace(0.0, 1.0, ns_in_plus_1)
-            self.s_in = full_grid[1:]
+            full_grid = _np.linspace(0.0, 1.0, ns_in_plus_1)  # 0..1, length ns_in+1
+            half_grid = 0.5 * (full_grid[:-1] + full_grid[1:])  # midpoints
+            self.s_in = half_grid
         # Set s_b for selected surfaces
         self.s_b = _np.asarray(self.s_in)[self.compute_surfs]
     return None
