@@ -364,41 +364,26 @@ class BoozXform:
         # Skip if grids already set up
         if self._prepared:
             return
-        # Determine Nyquist wavenumbers
-        assert self.mnmax_nyq is not None
-        assert self.xm_nyq is not None
-        assert self.xn_nyq is not None
-        # The Nyquist numbers include the negative toroidal modes, so
-        # find the maximum absolute toroidal mode number
-        mtot = int(_np.max(_np.abs(self.xm_nyq)))
-        ntot = int(_np.max(_np.abs(self.xn_nyq // self.nfp)))
-        # Choose resolution to be at least twice the maximum wavenumber
-        # plus a factor from the desired Boozer resolution.  These
-        # choices follow the original C++ code which doubles the
-        # resolution to avoid aliasing.
-        ntheta_min = 2 * (mtot + 1)
-        nzeta_min  = 2 * (ntot + self.nboz + 1)  # extra nboz margin
-        ntheta = max(ntheta_min, 64)
-        nzeta  = max(nzeta_min, 64)
+        # Ensure mboz and nboz are set
+        if self.mboz is None or self.nboz is None:
+            raise RuntimeError("mboz and nboz must be set before setting up grids")
+        # C++ uses ntheta=2*(2*mboz+1), nzeta=2*(2*nboz+1) (nzeta=1 if nboz==0)
+        ntheta = 2 * (2 * self.mboz + 1)
+        nzeta  = 2 * (2 * self.nboz + 1) if self.nboz > 0 else 1
         # Uniform grids on [0,2π)
-        theta_1d = jnp.linspace(0.0, 2.0 * jnp.pi, ntheta, endpoint=False)
-        zeta_1d  = jnp.linspace(0.0, 2.0 * jnp.pi, nzeta, endpoint=False)
+        theta_1d = jnp.linspace(0.0, 2.0*jnp.pi, ntheta, endpoint=False)
+        zeta_1d  = jnp.linspace(0.0, 2.0*jnp.pi, nzeta, endpoint=False)
         # Flattened tensor-product grid:
         # theta index varies slowest, zeta varies fastest:
-        theta_grid = jnp.repeat(theta_1d, nzeta)  # (ntheta * nzeta,)
-        zeta_grid  = jnp.tile(zeta_1d, ntheta)     # (ntheta * nzeta,)
-
+        self._theta_grid = jnp.repeat(theta_1d, nzeta)
+        self._zeta_grid  = jnp.tile(zeta_1d, ntheta)
         self._ntheta = int(ntheta)
-        self._nzeta = int(nzeta)
-        self._n_theta_zeta = int(theta_grid.shape[0])
-        self._theta_grid = theta_grid
-        self._zeta_grid = zeta_grid
-
+        self._nzeta  = int(nzeta)
+        self._n_theta_zeta = int(ntheta * nzeta)
         # nu2_b is the half-grid index used in the C++ code for
         # symmetric cases (theta = π).  Stored as 1-based index there;
         # we keep the same convention and convert to 0-based when needed.
-        self._nu2_b = self._ntheta // 2 + 1
-
+        self._nu2_b = self._ntheta//2 + 1
         self._prepared = True
 
     # ------------------------------------------------------------------
@@ -651,24 +636,15 @@ class BoozXform:
                                                         self.nfp)
 
             # Symmetric θ integration factor (only half-circle in θ):
+            # Apply the ½ factor for theta=0 and theta=π rows:
             if not self.asym:
-                i = nzeta * (nu2_b - 1) + 1  # 1-based in C++
-                imax = i - 1 + nzeta        # still 1-based
-                # Convert to 0-based slices:
-                # theta=0 block is j in [0, nzeta)
-                # theta=π block is j in [i-1, imax-1]
-                # Multiply those rows by 0.5:
-                idx0 = jnp.arange(0, nzeta, dtype=int)
-                idx_pi = jnp.arange(i - 1, imax, dtype=int)
-                for m in range(self.mboz + 1):
-                    cosm_col = cosm_b[:, m]
-                    sinm_col = sinm_b[:, m]
-                    cosm_col = cosm_col.at[idx0].set(0.5 * cosm_col[idx0])
-                    sinm_col = sinm_col.at[idx0].set(0.5 * sinm_col[idx0])
-                    cosm_col = cosm_col.at[idx_pi].set(0.5 * cosm_col[idx_pi])
-                    sinm_col = sinm_col.at[idx_pi].set(0.5 * sinm_col[idx_pi])
-                    cosm_b = cosm_b.at[:, m].set(cosm_col)
-                    sinm_b = sinm_b.at[:, m].set(sinm_col)
+                idx0   = jnp.arange(0, nzeta)                   # first poloidal row
+                idx_pi = jnp.arange(nzeta*(nu2_b-1), nzeta*nu2_b)
+                for m in range(self.mboz+1):
+                    cosm_b = cosm_b.at[idx0, m].set(cosm_b[idx0, m] * 0.5)
+                    sinm_b = sinm_b.at[idx0, m].set(sinm_b[idx0, m] * 0.5)
+                    cosm_b = cosm_b.at[idx_pi, m].set(cosm_b[idx_pi, m] * 0.5)
+                    sinm_b = sinm_b.at[idx_pi, m].set(sinm_b[idx_pi, m] * 0.5)
 
             # Boozer Jacobian J_B = (G + iota * I) / |B|^2
             boozer_jac = GI / (bmod * bmod)
@@ -677,10 +653,13 @@ class BoozXform:
             # Final Fourier integrals (eq 11)
             # ---------------------------
             if self.asym:
+                # asymmetric case: integrate over the full domain
                 fourier_factor0 = 2.0 / (ntheta * nzeta)
             else:
+                # symmetric case: integrate over half the domain
                 fourier_factor0 = 2.0 / ((nu2_b - 1) * nzeta)
-                # equivalently fac = 4.0 / (ntheta * nzeta)
+                # m=0 mode needs an extra factor of ½:
+                # this is handled by multiplying fourier_factor by ½ for jmn==0
 
             for jmn in range(mnboz):
                 m = int(self.xm_b[jmn])
