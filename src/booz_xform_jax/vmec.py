@@ -128,13 +128,20 @@ def init_from_vmec(self, *args, s_in: Optional[_np.ndarray] = None) -> None:
         # Generate a default uniform grid on [0, 1]
         s_uniform = _np.linspace(0.0, 1.0, ns_full)
         self.s_in = _np.asarray(s_uniform[1:], dtype=float)
-    # Helper to strip the axis from 2D arrays and convert to JAX
-    def strip_axis(arr: _np.ndarray, ncols: int) -> jnp.ndarray:
-        if arr.ndim != 2 or arr.shape[0] != ncols:
-            raise ValueError(f"strip_axis: input array has wrong shape: expected array.shape[0] == ncols={ncols} got {arr.shape[0]}")
-        return jnp.asarray(arr[1:, :], dtype=jnp.float64)
-    # Unpack mandatory arrays: order rmnc, rmns, zmnc, zmns, lmnc, lmns, bmnc, bmns,
-    # bsubumnc, bsubumns, bsubvmnc, bsubvmns.  Use parentheses to span lines.
+    # Helper to strip the axis from 2D arrays and convert to JAX.
+    # VMEC stores these as (ns_full, mnmax). We want (mnmax, ns_in)
+    # internally, with the axis (s=0) removed.
+    def strip_axis(arr: _np.ndarray, nrows: int) -> jnp.ndarray:
+        if arr.ndim != 2 or arr.shape[0] != nrows:
+            raise ValueError(
+                f"strip_axis: expected arr.shape[0] == {nrows}, got {arr.shape}"
+            )
+        # arr: (ns_full, mnmax) → drop s=0 row → (ns_in, mnmax) → transpose
+        # to (mnmax, ns_in) for use in core.run
+        return jnp.asarray(arr[1:, :].T, dtype=jnp.float64)
+
+    # Unpack mandatory arrays: order rmnc, rmns, zmnc, zmns, lmnc, lmns,
+    # bmnc, bmns, bsubumnc, bsubumns, bsubvmnc, bsubvmns.
     (
         rmnc0,
         rmns0,
@@ -161,12 +168,13 @@ def init_from_vmec(self, *args, s_in: Optional[_np.ndarray] = None) -> None:
     bsubumns0 = _np.asarray(bsubumns0)
     bsubvmnc0 = _np.asarray(bsubvmnc0)
     bsubvmns0 = _np.asarray(bsubvmns0)
-    # Determine shapes and set mnmax and mnmax_nyq on self if unset
-    # Non-Nyquist arrays have shape (mnmax, ns_full)
-    self.mnmax = rmnc0.shape[0]
-    # Nyquist arrays have shape (mnmax_nyq, ns_full)
-    self.mnmax_nyq = bmnc0.shape[0]
-    # Copy non-Nyquist arrays, stripping axis
+
+    # VMEC arrays are (ns_full, mnmax).  The number of modes is the
+    # SECOND dimension, not the first.
+    self.mnmax = rmnc0.shape[1]
+
+    # Copy non-Nyquist arrays, stripping axis and transposing to
+    # (mnmax, ns_in) for use in core.run.
     self.rmnc = strip_axis(rmnc0, ns_full)
     self.zmns = strip_axis(zmns0, ns_full)
     self.lmns = strip_axis(lmns0, ns_full)
@@ -178,11 +186,19 @@ def init_from_vmec(self, *args, s_in: Optional[_np.ndarray] = None) -> None:
         self.rmns = None
         self.zmnc = None
         self.lmnc = None
-    # Copy Nyquist arrays, stripping axis
-    def strip_axis_nyq(arr: _np.ndarray, ncols: int) -> jnp.ndarray:
-        if arr.ndim != 2 or arr.shape[0] != ncols:
-            raise ValueError(f"strip_axis_nyq: input Nyquist array has wrong shape: expected array.shape[0] == ncols={ncols} got {arr.shape[0]}")
-        return jnp.asarray(arr[1:, :], dtype=jnp.float64)
+    # Nyquist arrays: VMEC stores them as (ns_full, mnmax_nyq).
+    # Again, we want (mnmax_nyq, ns_in) internally.
+    self.mnmax_nyq = bmnc0.shape[1]
+
+    def strip_axis_nyq(arr: _np.ndarray, nrows: int) -> jnp.ndarray:
+        if arr.ndim != 2 or arr.shape[0] != nrows:
+            raise ValueError(
+                f"strip_axis_nyq: expected arr.shape[0] == {nrows}, got {arr.shape}"
+            )
+        # arr: (ns_full, mnmax_nyq) → drop s=0 row → (ns_in, mnmax_nyq)
+        # → transpose to (mnmax_nyq, ns_in).
+        return jnp.asarray(arr[1:, :].T, dtype=jnp.float64)
+
     self.bmnc = strip_axis_nyq(bmnc0, ns_full)
     self.bsubumnc = strip_axis_nyq(bsubumnc0, ns_full)
     self.bsubvmnc = strip_axis_nyq(bsubvmnc0, ns_full)
@@ -194,8 +210,9 @@ def init_from_vmec(self, *args, s_in: Optional[_np.ndarray] = None) -> None:
         self.bmns = None
         self.bsubumns = None
         self.bsubvmns = None
-    # Store Boozer I and G profiles for all half-grid surfaces (as numpy)
-    # The zeroth row (m=0,n=0) corresponds to these profiles
+
+    # Store Boozer I and G profiles for all half-grid surfaces (as numpy).
+    # With our layout (mnmax_nyq, ns_in), the (m=0,n=0) mode is row 0.
     self.Boozer_I_all = _np.asarray(self.bsubumnc[0, :])
     self.Boozer_G_all = _np.asarray(self.bsubvmnc[0, :])
     # Check for flux arrays
@@ -274,6 +291,7 @@ def read_wout(self, filename: str, flux: bool = False) -> None:
     self.xn_nyq = _np.asarray(ds.variables['xn_nyq'][:], dtype=int)
     self.mpol_nyq = int(self.xm_nyq[-1])
     self.ntor_nyq = int(self.xn_nyq[-1] // self.nfp)
+    self.ns_vmec = int(ds.variables['ns'][...].item())
     # Read non-Nyquist Fourier coefficients (shape (mnmax, ns))
     rmnc0 = _np.asarray(ds.variables['rmnc'][:])
     rmns0 = _np.asarray(ds.variables['rmns'][:]) if self.asym else _np.zeros_like(rmnc0)
@@ -317,6 +335,19 @@ def read_wout(self, filename: str, flux: bool = False) -> None:
     # will extract the last value later; otherwise it remains zero.
     # Extract iotas before closing the dataset; shape (ns,)
     iotas = _np.asarray(ds.variables['iotas'][:])
+    # Print verbose output to know all shapes, surfaces, etc.
+    print(f"read_wout: ns = {ns}, asymmetry flag = {self.asym}")
+    print(f"  mnmax = {self.mnmax}, mnmax_nyq = {self.mnmax_nyq}")
+    print(f"  rmnc0 shape: {rmnc0.shape}")
+    print(f"  bmnc0 shape: {bmnc0.shape}")
+    print(f"  bsubumnc0 shape: {bsubumnc0.shape}")
+    print(f"  bsubvmnc0 shape: {bsubvmnc0.shape}")
+    print(f"  nfp = {self.nfp}, mpol = {self.mpol}, ntor = {self.ntor}")
+    print(f"  mpol_nyq = {self.mpol_nyq}, ntor_nyq = {self.ntor_nyq}")
+    print(f"  iotas shape: {iotas.shape}")
+    print(f"  flux arrays read: {flux and (phip0 is not None and chi0 is not None and pres0 is not None and phi0 is not None)}")
+    print(f"  aspect ratio: {aspect0}")
+    print(f"  for the test, vmec has {self.ns_vmec} surfaces")
     # Close dataset
     if use_scipy:
         ds.close()

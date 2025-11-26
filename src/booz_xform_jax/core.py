@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 import numpy as _np
+from functools import partial
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional, Sequence
 
@@ -47,6 +48,52 @@ except ImportError as e:  # pragma: no cover
 
 from .vmec import init_from_vmec, read_wout
 from .io_utils import write_boozmn, read_boozmn
+
+@partial(jax.jit, static_argnums=(2, 3, 4))
+def _init_trig(theta_grid: jnp.ndarray,
+               zeta_grid: jnp.ndarray,
+               mmax: int,
+               nmax: int,
+               nfp: int) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """JAX analogue of the C++ init_trig function.
+
+    Parameters
+    ----------
+    theta_grid, zeta_grid : (n_theta_zeta,) jnp.ndarray
+        Flattened (theta, zeta) grids.
+    mmax : int
+        Maximum poloidal mode index m.
+    nmax : int
+        Maximum *period* index for n (i.e. max |n/nfp|).
+    nfp : int
+        Number of field periods (used in n * nfp * zeta).
+
+    Returns
+    -------
+    cosm, sinm, cosn, sinn : jnp.ndarray
+        Trigonometric tables with shapes
+            cosm, sinm : (n_theta_zeta, mmax+1)
+            cosn, sinn : (n_theta_zeta, nmax+1)
+        such that:
+            cosm[j, m] = cos(m * theta_grid[j])
+            sinm[j, m] = sin(m * theta_grid[j])
+            cosn[j, k] = cos(k * nfp * zeta_grid[j])
+            sinn[j, k] = sin(k * nfp * zeta_grid[j])
+    """
+    theta = theta_grid[:, None]  # (n_theta_zeta, 1)
+    zeta = zeta_grid[:, None]    # (n_theta_zeta, 1)
+
+    m_vals = jnp.arange(0, mmax + 1, dtype=jnp.float64)[None, :]  # (1, mmax+1)
+    n_vals = jnp.arange(0, nmax + 1, dtype=jnp.float64)[None, :]  # (1, nmax+1)
+
+    # Direct vectorized definitions (numerically equivalent to the
+    # recurrence relations in the C++ init_trig).
+    cosm = jnp.cos(theta * m_vals)       # shape (n_theta_zeta, mmax+1)
+    sinm = jnp.sin(theta * m_vals)
+    cosn = jnp.cos(zeta * (n_vals * nfp))
+    sinn = jnp.sin(zeta * (n_vals * nfp))
+
+    return cosm, sinm, cosn, sinn
 
 
 @dataclass
@@ -270,22 +317,34 @@ class BoozXform:
         ``mnboz`` and contain the poloidal and toroidal indices for each
         mode.  The toroidal index ``xn_b`` is stored as ``n*nfp`` to
         match the VMEC conventions.
+          - m runs from 0, 1, ..., mboz-1
+          - for m = 0, n runs 0, 1, ..., nboz
+          - for m > 0, n runs -nboz, ..., -1, 0, 1, ..., nboz
         """
         if self.mboz is None or self.nboz is None:
             raise RuntimeError("mboz and nboz must be set before preparing mode lists")
+
         m_list: List[int] = []
         n_list: List[int] = []
+
         for m in range(self.mboz):
-            nmin = 0 if m == 0 else -self.nboz
-            for n in range(nmin, self.nboz + 1):
-                m_list.append(m)
-                n_list.append(n * self.nfp)
+            if m == 0:
+                # m = 0 → keep only non-negative n
+                for n in range(0, self.nboz + 1):
+                    m_list.append(m)
+                    n_list.append(n * self.nfp)
+            else:
+                # m > 0 → keep all n from -nboz..nboz
+                for n in range(-self.nboz, self.nboz + 1):
+                    m_list.append(m)
+                    n_list.append(n * self.nfp)
+
         self.xm_b = _np.asarray(m_list, dtype=int)
         self.xn_b = _np.asarray(n_list, dtype=int)
         self.mnboz = len(self.xm_b)
 
     def _setup_grids(self) -> None:
-        """Set up real‐space grids and precompute trigonometric tables.
+        """Set up the (theta, zeta) grid and basic bookkeeping.
 
         This routine prepares several arrays needed for the coordinate
         transformation.  It computes the number of theta and zeta grid
@@ -295,6 +354,12 @@ class BoozXform:
         functions from spectral coefficients, as well as derivative
         factors.  The results are cached on ``self`` for reuse if
         :meth:`run` is called multiple times.
+
+        This mirrors the grid construction in the C++ code: we build a
+        tensor-product grid in (theta, zeta), then flatten it to obtain
+        arrays of length n_theta_zeta.  The exact resolutions ntheta and
+        nzeta are chosen based on the maximum Nyquist mode numbers,
+        similarly to the original implementation.
         """
         # Skip if grids already set up
         if self._prepared:
@@ -311,296 +376,359 @@ class BoozXform:
         # plus a factor from the desired Boozer resolution.  These
         # choices follow the original C++ code which doubles the
         # resolution to avoid aliasing.
-        ntheta = max(2 * (mtot + self.mboz), 64)
-        nzeta  = max(2 * (ntot + self.nboz), 64)
+        ntheta_min = 2 * (mtot + 1)
+        nzeta_min  = 2 * (ntot + self.nboz + 1)  # extra nboz margin
+        ntheta = max(ntheta_min, 64)
+        nzeta  = max(nzeta_min, 64)
         # Uniform grids on [0,2π)
-        theta = jnp.linspace(0.0, 2.0 * jnp.pi, ntheta, endpoint=False)
-        zeta = jnp.linspace(0.0, 2.0 * jnp.pi, nzeta, endpoint=False)
-        # Precompute cos and sin matrices for non‑Nyquist and Nyquist modes
-        # Non‑Nyquist (mnmax) shapes: (mnmax, ntheta)
-        cos_mn = jnp.cos(jnp.outer(self.xm, theta) - jnp.outer(self.xn // self.nfp, zeta))
-        sin_mn = jnp.sin(jnp.outer(self.xm, theta) - jnp.outer(self.xn // self.nfp, zeta))
-        # Nyquist shapes: (mnmax_nyq, ntheta)
-        cos_mn_nyq = jnp.cos(jnp.outer(self.xm_nyq, theta) - jnp.outer(self.xn_nyq // self.nfp, zeta))
-        sin_mn_nyq = jnp.sin(jnp.outer(self.xm_nyq, theta) - jnp.outer(self.xn_nyq // self.nfp, zeta))
-        # Derivative factors: derivative with respect to theta gives  m, with respect to zeta gives n/nfp
-        dth_mn = jnp.asarray(self.xm, dtype=jnp.float64)
-        dth_mn_nyq = jnp.asarray(self.xm_nyq, dtype=jnp.float64)
-        dze_mn = jnp.asarray(self.xn // self.nfp, dtype=jnp.float64)
-        dze_mn_nyq = jnp.asarray(self.xn_nyq // self.nfp, dtype=jnp.float64)
-        # Store grids and derivative factors
-        self._ntheta = ntheta
-        self._nzeta = nzeta
-        self._theta = theta
-        self._zeta = zeta
-        self._cos_mn = cos_mn
-        self._sin_mn = sin_mn
-        self._cos_mn_nyq = cos_mn_nyq
-        self._sin_mn_nyq = sin_mn_nyq
-        self._dth_mn = dth_mn
-        self._dth_mn_nyq = dth_mn_nyq
-        self._dze_mn = dze_mn
-        self._dze_mn_nyq = dze_mn_nyq
+        theta_1d = jnp.linspace(0.0, 2.0 * jnp.pi, ntheta, endpoint=False)
+        zeta_1d  = jnp.linspace(0.0, 2.0 * jnp.pi, nzeta, endpoint=False)
+        # Flattened tensor-product grid:
+        # theta index varies slowest, zeta varies fastest:
+        theta_grid = jnp.repeat(theta_1d, nzeta)  # (ntheta * nzeta,)
+        zeta_grid  = jnp.tile(zeta_1d, ntheta)     # (ntheta * nzeta,)
+
+        self._ntheta = int(ntheta)
+        self._nzeta = int(nzeta)
+        self._n_theta_zeta = int(theta_grid.shape[0])
+        self._theta_grid = theta_grid
+        self._zeta_grid = zeta_grid
+
+        # nu2_b is the half-grid index used in the C++ code for
+        # symmetric cases (theta = π).  Stored as 1-based index there;
+        # we keep the same convention and convert to 0-based when needed.
+        self._nu2_b = self._ntheta // 2 + 1
+
         self._prepared = True
 
     # ------------------------------------------------------------------
     def run(self) -> None:
         """Perform the Boozer coordinate transformation on selected surfaces.
 
-        This method constructs real‑space representations of the magnetic
-        field on each selected surface, computes the Boozer angles
-        (vartheta and vphi) by solving a set of nonlinear equations, and
-        finally extracts the Boozer Fourier spectra.  The computation is
-        vectorised where possible and uses JAX JIT compilation for
-        efficiency.  After running, the instance will have its
-        Boozer spectra arrays (``bmnc_b``, ``bmns_b``, etc.) populated
-        as NumPy arrays of shape ``(mnboz, ns_b)``.  The radial
-        profiles ``Boozer_I`` and ``Boozer_G`` are also computed on
-        the selected surfaces.
+        This implementation closely follows the original C++
+        ``Booz_xform::surface_solve`` algorithm:
+
+          1. Build the flattened (theta, zeta) grid and precompute
+             trig tables for VMEC (non-Nyquist) and Nyquist spectra.
+          2. For each requested surface js_b (with input index js):
+               - Construct R, Z, lambda and their derivatives in real
+                 space on the (theta, zeta) grid.
+               - Construct the auxiliary function w and |B|.
+               - Compute nu, Boozer angles theta_B, zeta_B, and
+                 d_Boozer_d_vmec.
+               - Build trig tables in Boozer coordinates.
+               - Perform the 2D Fourier integrals to obtain Boozer
+                 Fourier coefficients B_{m,n}, R_{m,n}, Z_{m,n}, nu_{m,n},
+                 and the Boozer Jacobian harmonics.
         """
-        if self.rmnc is None:
+        if self.rmnc is None or self.bmnc is None:
             raise RuntimeError("VMEC data must be initialised before running the transform")
-        # Set default compute_surfs if not specified
+
+        # Number of half-grid surfaces:
         ns_in = int(self.ns_in)
+        if ns_in <= 0:
+            raise RuntimeError("ns_in must be positive; did init_from_vmec run correctly?")
+
+        # Default: compute on all surfaces:
         if self.compute_surfs is None:
             self.compute_surfs = list(range(ns_in))
         else:
-            # Validate indices
             for idx in self.compute_surfs:
                 if idx < 0 or idx >= ns_in:
                     raise ValueError(
-                        f"compute_surfs has an entry {idx} outside the range [0, {ns_in - 1}]"
+                        f"compute_surfs has an entry {idx} outside [0, {ns_in - 1}]"
                     )
-        # Prepare mode lists and grids if not already done
-        # Set default Boozer resolution if unset.  Use VMEC resolution.
+
+        # ------------------------------------------------------------------
+        # Ensure Boozer mode lists (xm_b, xn_b, mnboz) are prepared.
+        # Use VMEC resolution as default if user did not set mboz/nboz.
+        # ------------------------------------------------------------------
         if self.mboz is None:
-            self.mboz = self.mpol
+            if self.mpol is None or self.mpol == 0:
+                raise RuntimeError(
+                    "mboz is not set and mpol is zero; did you call read_wout/init_from_vmec?"
+                )
+            self.mboz = int(self.mpol)
+
         if self.nboz is None:
-            self.nboz = self.ntor
+            if self.ntor is None or self.ntor == 0:
+                raise RuntimeError(
+                    "nboz is not set and ntor is zero; did you call read_wout/init_from_vmec?"
+                )
+            self.nboz = int(self.ntor)
+
         if self.mnboz is None or self.xm_b is None or self.xn_b is None:
             self._prepare_mode_lists()
+
+        # Prepare grid and basic bookkeeping:
         self._setup_grids()
-        # Number of surfaces to compute
+        ntheta = self._ntheta
+        nzeta = self._nzeta
+        n_theta_zeta = self._n_theta_zeta
+        theta_grid = self._theta_grid
+        zeta_grid = self._zeta_grid
+        nu2_b = self._nu2_b  # 1-based index in the C++ code
+
+        # Precompute trig tables for the VMEC (non-Nyquist) spectrum:
+        mmax_non = int(_np.max(_np.abs(self.xm)))
+        nmax_non = int(_np.max(_np.abs(self.xn // self.nfp)))
+        cosm, sinm, cosn, sinn = _init_trig(theta_grid, zeta_grid,
+                                            mmax_non, nmax_non, self.nfp)
+
+        # Precompute trig tables for the Nyquist spectrum:
+        mmax_nyq = int(_np.max(_np.abs(self.xm_nyq)))
+        nmax_nyq = int(_np.max(_np.abs(self.xn_nyq // self.nfp)))
+        cosm_nyq, sinm_nyq, cosn_nyq, sinn_nyq = _init_trig(theta_grid, zeta_grid,
+                                                            mmax_nyq, nmax_nyq, self.nfp)
+
+        # Prepare output arrays in Boozer space:
         ns_b = len(self.compute_surfs)
         self.ns_b = ns_b
-        # Allocate output arrays.  Use NumPy to avoid JAX indexing restrictions.
-        mnboz = self.mnboz
-        bmnc_b_out = _np.zeros((mnboz, ns_b), dtype=float)
-        rmnc_b_out = _np.zeros((mnboz, ns_b), dtype=float)
-        zmns_b_out = _np.zeros((mnboz, ns_b), dtype=float)
-        numns_b_out = _np.zeros((mnboz, ns_b), dtype=float)
-        gmnc_b_out = _np.zeros((mnboz, ns_b), dtype=float)
-        # Allocate asymmetric arrays only if needed
+        mnboz = int(self.mnboz)
+
+        bmnc_b = _np.zeros((mnboz, ns_b), dtype=float)
+        rmnc_b = _np.zeros((mnboz, ns_b), dtype=float)
+        zmns_b = _np.zeros((mnboz, ns_b), dtype=float)
+        numns_b = _np.zeros((mnboz, ns_b), dtype=float)
+        gmnc_b = _np.zeros((mnboz, ns_b), dtype=float)
+
         if self.asym:
-            bmns_b_out = _np.zeros((mnboz, ns_b), dtype=float)
-            rmns_b_out = _np.zeros((mnboz, ns_b), dtype=float)
-            zmnc_b_out = _np.zeros((mnboz, ns_b), dtype=float)
-            numnc_b_out = _np.zeros((mnboz, ns_b), dtype=float)
-            gmns_b_out = _np.zeros((mnboz, ns_b), dtype=float)
+            bmns_b = _np.zeros((mnboz, ns_b), dtype=float)
+            rmns_b = _np.zeros((mnboz, ns_b), dtype=float)
+            zmnc_b = _np.zeros((mnboz, ns_b), dtype=float)
+            numnc_b = _np.zeros((mnboz, ns_b), dtype=float)
+            gmns_b = _np.zeros((mnboz, ns_b), dtype=float)
         else:
-            bmns_b_out = None
-            rmns_b_out = None
-            zmnc_b_out = None
-            numnc_b_out = None
-            gmns_b_out = None
-        # Allocate radial profiles on selected surfaces
+            bmns_b = rmns_b = zmnc_b = numnc_b = gmns_b = None
+
+        # Boozer I and G on selected surfaces:
         Boozer_I = _np.zeros(ns_b, dtype=float)
         Boozer_G = _np.zeros(ns_b, dtype=float)
-        # Helper function to solve the surface equations for one surface.
-        # This function is defined here so that it can close over self
-        # without making everything static.  It will be JIT compiled by
-        # JAX.
-        def surface_solve(rmnc_j, rmns_j, zmnc_j, zmns_j, lmnc_j, lmns_j,
-                          bmnc_j, bmns_j, bsubumnc_j, bsubumns_j,
-                          bsubvmnc_j, bsubvmns_j, asym_flag):
-            """Compute Boozer spectra on a single surface.
 
-            Parameters
-            ----------
-            rmnc_j, rmns_j, zmnc_j, zmns_j : jax.numpy.DeviceArray
-                VMEC Fourier coefficients of R, Z on this surface.
-            lmnc_j, lmns_j : jax.numpy.DeviceArray
-                VMEC Fourier coefficients of λ (lambda) on this surface.
-            bmnc_j, bmns_j : jax.numpy.DeviceArray
-                VMEC Fourier coefficients of the magnetic field magnitude B
-                on this surface.
-            bsubumnc_j, bsubumns_j, bsubvmnc_j, bsubvmns_j : jax.numpy.DeviceArray
-                VMEC Fourier coefficients of the covariant components of B.
-            asym_flag : bool
-                Whether the equilibrium is non‑symmetric; determines
-                whether sine/sine terms are used.
+        # Convenience views:
+        xm_non = jnp.asarray(self.xm, dtype=jnp.int32)
+        xn_non = jnp.asarray(self.xn, dtype=jnp.int32)
+        xm_nyq_arr = jnp.asarray(self.xm_nyq, dtype=jnp.int32)
+        xn_nyq_arr = jnp.asarray(self.xn_nyq, dtype=jnp.int32)
 
-            Returns
-            -------
-            bmnc_b_s, bmns_b_s, rmnc_b_s, rmns_b_s, zmnc_b_s, zmns_b_s,
-            numnc_b_s, numns_b_s, gmnc_b_s, gmns_b_s : jax.numpy.DeviceArray
-                Arrays of length ``mnboz`` containing the Boozer Fourier
-                coefficients for this surface.  Asymmetric arrays are
-                returned only when ``asym_flag`` is True.
-            """
-            # Build real‑space functions using Fourier synthesis
-            # R, Z, λ on grid
-            r = jnp.dot(rmnc_j, self._cos_mn) - (jnp.dot(rmns_j, self._sin_mn) if asym_flag else 0.0)
-            z = jnp.dot(zmns_j, self._sin_mn) + (jnp.dot(zmnc_j, self._cos_mn) if asym_flag else 0.0)
-            lam = jnp.dot(lmns_j, self._sin_mn) + (jnp.dot(lmnc_j, self._cos_mn) if asym_flag else 0.0)
-            # B components on grid
-            Bm = jnp.dot(bmnc_j, self._cos_mn_nyq) - (jnp.dot(bmns_j, self._sin_mn_nyq) if asym_flag else 0.0)
-            # Covariant components on grid
-            bsubu = jnp.dot(bsubumnc_j, self._cos_mn_nyq) - (jnp.dot(bsubumns_j, self._sin_mn_nyq) if asym_flag else 0.0)
-            bsubv = jnp.dot(bsubvmnc_j, self._cos_mn_nyq) - (jnp.dot(bsubvmns_j, self._sin_mn_nyq) if asym_flag else 0.0)
-            # Derivatives of R, Z, λ with respect to theta and zeta
-            dth_r = jnp.dot(rmnc_j * self._dth_mn, self._sin_mn) + (jnp.dot(rmns_j * self._dth_mn, self._cos_mn) if asym_flag else 0.0)
-            dth_z = jnp.dot(zmns_j * self._dth_mn, self._cos_mn) - (jnp.dot(zmnc_j * self._dth_mn, self._sin_mn) if asym_flag else 0.0)
-            dth_l = jnp.dot(lmns_j * self._dth_mn, self._cos_mn) - (jnp.dot(lmnc_j * self._dth_mn, self._sin_mn) if asym_flag else 0.0)
-            dze_r = -jnp.dot(rmnc_j * self._dze_mn, self._sin_mn) - (jnp.dot(rmns_j * self._dze_mn, self._cos_mn) if asym_flag else 0.0)
-            dze_z = jnp.dot(zmns_j * self._dze_mn, self._cos_mn) + (jnp.dot(zmnc_j * self._dze_mn, self._sin_mn) if asym_flag else 0.0)
-            dze_l = jnp.dot(lmns_j * self._dze_mn, self._cos_mn) + (jnp.dot(lmnc_j * self._dze_mn, self._sin_mn) if asym_flag else 0.0)
-            # Metric factors: w = sqrt((dth_r * dze_z - dze_r * dth_z)^2 + ... )
-            # Compute cross products for Jacobian determinant of (r, z, φ) -> (θ, ζ)
-            # In cylindrical coordinates, φ coordinate derivative not present here.  Use R = r.
-            # However, for Boozer transform we need only the Jacobian factor w = R^2 * ∂(λ)/∂θ * 2π?  See theory.
-            # Here we compute the covariant basis vectors and the Jacobian determinant
-            # e_theta = (dth_r, 0, dth_z)
-            # e_zeta = (dze_r, r, dze_z)
-            # The Jacobian J = r * (dth_r * dze_z - dze_r * dth_z)
-            J = r * (dth_r * dze_z - dze_r * dth_z)
-            # Contravariant metric component g^{uv}
-            # Boozer condition: bsubu = I + (∂χ/∂θ), bsubv = G + (∂χ/∂ζ)
-            # Compute u and v derivatives of Boozer angles: ∂vartheta/∂θ and ∂vphi/∂ζ
-            # Solve linear system to enforce B · ∇vartheta = 0 and B · ∇vphi = 1/R^2.
-            # For efficiency we solve per grid point.  Use vectorised operations.
-            # Compute elements of the matrix and RHS according to the original algorithm.
-            # See booz_xform theory for details.
-            # For each grid point, solve 2x2 system:
-            # [ bsubu   bsubv ] [ u_th  ] = [ 0   ]
-            # [ bsubu   bsubv ] [ v_ze  ]   [ Bm ]
-            # Additional relations for derivatives cross etc.  Use the original C++ code as guidance.
-            #
-            # We vectorise by solving for all grid points simultaneously.  Because the matrix is the same in both rows
-            # (bsubu and bsubv), the solution simplifies.
-            # Let det = bsubu * bsubu + bsubv * bsubv
-            det = bsubu * bsubu + bsubv * bsubv
-            # Avoid division by zero by adding a small epsilon; this also prevents NaNs when B=0.
-            eps = 1e-14
-            det = det + eps
-            # Solve for derivatives of Boozer angles
-            u_th = ( -bsubv * Bm ) / det
-            u_ze = (  bsubu * Bm ) / det
-            v_th = bsubv / det
-            v_ze = -bsubu / det
-            # Integrate derivatives to obtain Boozer angles
-            # Use cumulative trapezoidal integration over theta and zeta.  Since the grid is uniform,
-            # we can approximate the integral by summing derivatives times grid spacing.
-            # First integrate over theta (axis 1) then zeta (axis 0).
-            # Compute cumulative sums for each variable separately.  JAX's cumsum yields an array of same shape.
-            dth = 2.0 * jnp.pi / self._ntheta
-            dze = 2.0 * jnp.pi / self._nzeta
-            vartheta = jnp.cumsum(u_th * dth, axis=1)
-            vphi = jnp.cumsum(u_ze * dze, axis=0)
-            # Remove mean to avoid numerical drift
-            vartheta = vartheta - jnp.mean(vartheta, axis=(0,1))
-            vphi = vphi - jnp.mean(vphi, axis=(0,1))
-            # Build complex exponentials for Boozer harmonics
-            exp_i = jnp.exp(1j * (jnp.outer(self.xm_b, vartheta.flatten()) - jnp.outer(self.xn_b // self.nfp, vphi.flatten())))
-            # Multiply by weights and integrate over the grid to obtain Fourier coefficients
-            # The integration measure includes 1/(4π^2) as per the definition.
-            weight = J / ( (2.0 * jnp.pi)**2 )
-            # Reshape weight to flatten grid
-            wvec = weight.flatten()
-            # Compute harmonics by dotting with exponential; real and imaginary parts give cos and sin coefficients.
-            coeffs = jnp.dot(exp_i, wvec)
-            bmnc_b_s = jnp.real(coeffs)
-            bmns_b_s = -jnp.imag(coeffs)
-            # For R and Z Boozer harmonics, reuse the same exponentials but with r and z values
-            coeffs_r = jnp.dot(exp_i, r.flatten()) * (1.0 / (2.0 * jnp.pi)**2)
-            coeffs_z = jnp.dot(exp_i, z.flatten()) * (1.0 / (2.0 * jnp.pi)**2)
-            rmnc_b_s = jnp.real(coeffs_r)
-            rmns_b_s = -jnp.imag(coeffs_r)
-            zmns_b_s = jnp.imag(coeffs_z)
-            zmnc_b_s = jnp.real(coeffs_z)
-            # λ Boozer harmonics produce Boozer angle χ, but we do not expose them directly.
-            # Compute Jacobian gmn harmonics
-            gtemp = jnp.dot(exp_i, (J * Bm).flatten()) * (1.0 / (2.0 * jnp.pi)**2)
-            gmnc_b_s = jnp.real(gtemp)
-            gmns_b_s = -jnp.imag(gtemp)
-            # Normal derivatives numnc and numns: derivative of B magnitude
-            coeffs_nu = jnp.dot(exp_i, (Bm).flatten()) * (1.0 / (2.0 * jnp.pi)**2)
-            numnc_b_s = jnp.real(coeffs_nu)
-            numns_b_s = -jnp.imag(coeffs_nu)
-            if asym_flag:
-                return (bmnc_b_s, bmns_b_s, rmnc_b_s, rmns_b_s,
-                        zmnc_b_s, zmns_b_s, numnc_b_s, numns_b_s,
-                        gmnc_b_s, gmns_b_s)
-            else:
-                return (bmnc_b_s, None, rmnc_b_s, None,
-                        None, zmns_b_s, None, numns_b_s,
-                        gmnc_b_s, None)
-
-        # JIT compile the surface solver once
-        jit_surface_solve = jax.jit(surface_solve, static_argnums=(12,))
-        # Loop over requested surfaces
+        # Loop over surfaces js_b:
         for js_b, js in enumerate(self.compute_surfs):
-            # Extract VMEC columns for this surface
-            rmnc_j = self.rmnc[:, js]
-            rmns_j = self.rmns[:, js] if self.asym else None
-            zmnc_j = self.zmnc[:, js] if self.asym else None
-            zmns_j = self.zmns[:, js]
-            lmnc_j = self.lmnc[:, js] if self.asym else None
-            lmns_j = self.lmns[:, js]
-            bmnc_j = self.bmnc[:, js]
-            bmns_j = self.bmns[:, js] if self.asym else None
-            bsubumnc_j = self.bsubumnc[:, js]
-            bsubumns_j = self.bsubumns[:, js] if self.asym else None
-            bsubvmnc_j = self.bsubvmnc[:, js]
-            bsubvmns_j = self.bsubvmns[:, js] if self.asym else None
-            # Boozer I and G for this surface come from m=0,n=0 entry
-            Boozer_I[js_b] = float(bsubumnc_j[0])
-            Boozer_G[js_b] = float(bsubvmnc_j[0])
-            # Solve surface
-            res = jit_surface_solve(rmnc_j, rmns_j, zmnc_j, zmns_j,
-                                    lmnc_j, lmns_j, bmnc_j, bmns_j,
-                                    bsubumnc_j, bsubumns_j, bsubvmnc_j, bsubvmns_j,
-                                    self.asym)
-            # Unpack results
-            (bmnc_b_s, bmns_b_s, rmnc_b_s, rmns_b_s,
-             zmnc_b_s, zmns_b_s, numnc_b_s, numns_b_s,
-             gmnc_b_s, gmns_b_s) = res
-            # Store into output arrays
-            bmnc_b_out[:, js_b] = _np.asarray(bmnc_b_s)
-            rmnc_b_out[:, js_b] = _np.asarray(rmnc_b_s)
+            # ---------------------------
+            # Work arrays (length n_theta_zeta)
+            # ---------------------------
+            r = jnp.zeros(n_theta_zeta, dtype=jnp.float64)
+            z = jnp.zeros(n_theta_zeta, dtype=jnp.float64)
+            lam = jnp.zeros(n_theta_zeta, dtype=jnp.float64)
+            dlam_dth = jnp.zeros(n_theta_zeta, dtype=jnp.float64)
+            dlam_dze = jnp.zeros(n_theta_zeta, dtype=jnp.float64)
+            w = jnp.zeros(n_theta_zeta, dtype=jnp.float64)
+            dw_dth = jnp.zeros(n_theta_zeta, dtype=jnp.float64)
+            dw_dze = jnp.zeros(n_theta_zeta, dtype=jnp.float64)
+            bmod = jnp.zeros(n_theta_zeta, dtype=jnp.float64)
+            nu = jnp.zeros(n_theta_zeta, dtype=jnp.float64)
+            dnu_dth = jnp.zeros(n_theta_zeta, dtype=jnp.float64)
+            dnu_dze = jnp.zeros(n_theta_zeta, dtype=jnp.float64)
+            theta_B = jnp.zeros(n_theta_zeta, dtype=jnp.float64)
+            zeta_B = jnp.zeros(n_theta_zeta, dtype=jnp.float64)
+            dB_dvmec = jnp.zeros(n_theta_zeta, dtype=jnp.float64)
+            boozer_jac = jnp.zeros(n_theta_zeta, dtype=jnp.float64)
+
+            # wmns, wmnc (Nyquist, length mnmax_nyq)
+            mnmax_nyq = int(self.mnmax_nyq)
+            wmns = jnp.zeros(mnmax_nyq, dtype=jnp.float64)
+            wmnc = jnp.zeros(mnmax_nyq, dtype=jnp.float64) if self.asym else None
+
+            # ---------------------------
+            # transpmn.f part: build wmns/wmnc and Boozer_I/G
+            # ---------------------------
+            for jmn in range(mnmax_nyq):
+                m = xm_nyq_arr[jmn]
+                n = xn_nyq_arr[jmn]
+
+                if m != 0:
+                    wmns = wmns.at[jmn].set(self.bsubumnc[jmn, js] / m)
+                    if self.asym and self.bsubumns is not None:
+                        wmnc = wmnc.at[jmn].set(-self.bsubumns[jmn, js] / m)
+                elif n != 0:
+                    wmns = wmns.at[jmn].set(-self.bsubvmnc[jmn, js] / n)
+                    if self.asym and self.bsubvmns is not None:
+                        wmnc = wmnc.at[jmn].set(self.bsubvmns[jmn, js] / n)
+                else:
+                    # m = n = 0 → Boozer I and G
+                    Boozer_I[js_b] = float(self.bsubumnc[jmn, js])
+                    Boozer_G[js_b] = float(self.bsubvmnc[jmn, js])
+                    # Corresponding p mode is set to 0 by convention.
+
+            # ---------------------------
+            # vcoords_rz part: R, Z, lambda and derivatives (non-Nyquist)
+            # ---------------------------
+            mnmax_non = int(self.mnmax)
+            this_rmnc = self.rmnc[:, js]
+            this_zmns = self.zmns[:, js]
+            this_lmns = self.lmns[:, js]
+            this_rmns = self.rmns[:, js] if self.asym and self.rmns is not None else None
+            this_zmnc = self.zmnc[:, js] if self.asym and self.zmnc is not None else None
+            this_lmnc = self.lmnc[:, js] if self.asym and self.lmnc is not None else None
+
+            for jmn in range(mnmax_non):
+                m = xm_non[jmn]
+                n = xn_non[jmn]
+                abs_n = abs(n // self.nfp)
+                sign = -1 if n < 0 else 1
+
+                tcos = (cosm[:, m] * cosn[:, abs_n] +
+                        sinm[:, m] * sinn[:, abs_n] * sign)
+                tsin = (sinm[:, m] * cosn[:, abs_n] -
+                        cosm[:, m] * sinn[:, abs_n] * sign)
+
+                r = r + tcos * this_rmnc[jmn]
+                z = z + tsin * this_zmns[jmn]
+                lam = lam + tsin * this_lmns[jmn]
+                dlam_dth = dlam_dth + tcos * this_lmns[jmn] * m
+                dlam_dze = dlam_dze - tcos * this_lmns[jmn] * n
+
+                if self.asym and this_rmns is not None:
+                    r = r + tsin * this_rmns[jmn]
+                    z = z + tcos * this_zmnc[jmn]
+                    lam = lam + tcos * this_lmnc[jmn]
+                    dlam_dth = dlam_dth - tsin * this_lmnc[jmn] * m
+                    dlam_dze = dlam_dze + tsin * this_lmnc[jmn] * n
+
+            # ---------------------------
+            # vcoords_w part: w, dw/dθ, dw/dζ, |B| (Nyquist)
+            # ---------------------------
+            for jmn in range(mnmax_nyq):
+                m = xm_nyq_arr[jmn]
+                n = xn_nyq_arr[jmn]
+                abs_n = abs(n // self.nfp)
+                sign = -1 if n < 0 else 1
+
+                tcos = (cosm_nyq[:, m] * cosn_nyq[:, abs_n] +
+                        sinm_nyq[:, m] * sinn_nyq[:, abs_n] * sign)
+                tsin = (sinm_nyq[:, m] * cosn_nyq[:, abs_n] -
+                        cosm_nyq[:, m] * sinn_nyq[:, abs_n] * sign)
+
+                w = w + tsin * wmns[jmn]
+                dw_dth = dw_dth + tcos * wmns[jmn] * m
+                dw_dze = dw_dze - tcos * wmns[jmn] * n
+                bmod = bmod + tcos * self.bmnc[jmn, js]
+
+                if self.asym and wmnc is not None and self.bmns is not None:
+                    w = w + tcos * wmnc[jmn]
+                    dw_dth = dw_dth - tsin * wmnc[jmn] * m
+                    dw_dze = dw_dze + tsin * wmnc[jmn] * n
+                    bmod = bmod + tsin * self.bmns[jmn, js]
+
+            # ---------------------------
+            # harfun / eq (10–12): nu, Boozer angles, d_Boozer_d_vmec
+            # ---------------------------
+            this_iota = float(self.iota[js])
+            GI = Boozer_G[js_b] + this_iota * Boozer_I[js_b]
+            one_over_GI = 1.0 / GI
+
+            # nu from eq (10):
+            nu = one_over_GI * (w - Boozer_I[js_b] * lam)
+
+            # Boozer angles from eq (3):
+            theta_B = theta_grid + lam + this_iota * nu
+            zeta_B = zeta_grid + nu
+
+            # Derivatives of nu:
+            dnu_dze = one_over_GI * (dw_dze - Boozer_I[js_b] * dlam_dze)
+            dnu_dth = one_over_GI * (dw_dth - Boozer_I[js_b] * dlam_dth)
+
+            # Eq (12):
+            dB_dvmec = (1.0 + dlam_dth) * (1.0 + dnu_dze) + \
+                       (this_iota - dlam_dze) * dnu_dth
+
+            # ---------------------------
+            # Boozer trig tables on (theta_B, zeta_B)
+            # ---------------------------
+            cosm_b, sinm_b, cosn_b, sinn_b = _init_trig(theta_B, zeta_B,
+                                                        int(self.mboz),
+                                                        int(self.nboz),
+                                                        self.nfp)
+
+            # Symmetric θ integration factor (only half-circle in θ):
+            if not self.asym:
+                i = nzeta * (nu2_b - 1) + 1  # 1-based in C++
+                imax = i - 1 + nzeta        # still 1-based
+                # Convert to 0-based slices:
+                # theta=0 block is j in [0, nzeta)
+                # theta=π block is j in [i-1, imax-1]
+                # Multiply those rows by 0.5:
+                idx0 = jnp.arange(0, nzeta, dtype=int)
+                idx_pi = jnp.arange(i - 1, imax, dtype=int)
+                for m in range(self.mboz + 1):
+                    cosm_col = cosm_b[:, m]
+                    sinm_col = sinm_b[:, m]
+                    cosm_col = cosm_col.at[idx0].set(0.5 * cosm_col[idx0])
+                    sinm_col = sinm_col.at[idx0].set(0.5 * sinm_col[idx0])
+                    cosm_col = cosm_col.at[idx_pi].set(0.5 * cosm_col[idx_pi])
+                    sinm_col = sinm_col.at[idx_pi].set(0.5 * sinm_col[idx_pi])
+                    cosm_b = cosm_b.at[:, m].set(cosm_col)
+                    sinm_b = sinm_b.at[:, m].set(sinm_col)
+
+            # Boozer Jacobian J_B = (G + iota * I) / |B|^2
+            boozer_jac = GI / (bmod * bmod)
+
+            # ---------------------------
+            # Final Fourier integrals (eq 11)
+            # ---------------------------
             if self.asym:
-                bmns_b_out[:, js_b] = _np.asarray(bmns_b_s)
-                rmns_b_out[:, js_b] = _np.asarray(rmns_b_s)
-                zmnc_b_out[:, js_b] = _np.asarray(zmnc_b_s)
-                numnc_b_out[:, js_b] = _np.asarray(numnc_b_s)
-                gmns_b_out[:, js_b] = _np.asarray(gmns_b_s)
-            # Asymmetric or symmetric z and nu harmonics
-            if self.asym:
-                zmns_b_out[:, js_b] = _np.asarray(zmns_b_s)
-                numns_b_out[:, js_b] = _np.asarray(numns_b_s)
+                fourier_factor0 = 2.0 / (ntheta * nzeta)
             else:
-                zmns_b_out[:, js_b] = _np.asarray(zmns_b_s)
-                numns_b_out[:, js_b] = _np.asarray(numns_b_s)
-            gmnc_b_out[:, js_b] = _np.asarray(gmnc_b_s)
-        # Save results on self
-        self.bmnc_b = bmnc_b_out
-        self.rmnc_b = rmnc_b_out
-        self.zmns_b = zmns_b_out
-        self.numns_b = numns_b_out
-        self.gmnc_b = gmnc_b_out
+                fourier_factor0 = 2.0 / ((nu2_b - 1) * nzeta)
+                # equivalently fac = 4.0 / (ntheta * nzeta)
+
+            for jmn in range(mnboz):
+                m = int(self.xm_b[jmn])
+                n = int(self.xn_b[jmn])
+                abs_n = abs(n // self.nfp)
+                sign = -1 if n < 0 else 1
+
+                fourier_factor = fourier_factor0
+                if jmn == 0:
+                    fourier_factor *= 0.5  # extra 1/2 for m=0 mode
+
+                # tcos / tsin as in C++:
+                tcos = (cosm_b[:, m] * cosn_b[:, abs_n] +
+                        sinm_b[:, m] * sinn_b[:, abs_n] * sign) \
+                       * dB_dvmec * fourier_factor
+                tsin = (sinm_b[:, m] * cosn_b[:, abs_n] -
+                        cosm_b[:, m] * sinn_b[:, abs_n] * sign) \
+                       * dB_dvmec * fourier_factor
+
+                # Integrate over all grid points:
+                bmnc_b[jmn, js_b] += float(jnp.sum(tcos * bmod))
+                rmnc_b[jmn, js_b] += float(jnp.sum(tcos * r))
+                zmns_b[jmn, js_b] += float(jnp.sum(tsin * z))
+                numns_b[jmn, js_b] += float(jnp.sum(tsin * nu))
+                gmnc_b[jmn, js_b] += float(jnp.sum(tcos * boozer_jac))
+
+                if self.asym:
+                    bmns_b[jmn, js_b] += float(jnp.sum(tsin * bmod))
+                    rmns_b[jmn, js_b] += float(jnp.sum(tsin * r))
+                    zmnc_b[jmn, js_b] += float(jnp.sum(tcos * z))
+                    numnc_b[jmn, js_b] += float(jnp.sum(tcos * nu))
+                    gmns_b[jmn, js_b] += float(jnp.sum(tsin * boozer_jac))
+
+        # Store results on the instance:
+        self.bmnc_b = bmnc_b
+        self.rmnc_b = rmnc_b
+        self.zmns_b = zmns_b
+        self.numns_b = numns_b
+        self.gmnc_b = gmnc_b
         if self.asym:
-            self.bmns_b = bmns_b_out
-            self.rmns_b = rmns_b_out
-            self.zmnc_b = zmnc_b_out
-            self.numnc_b = numnc_b_out
-            self.gmns_b = gmns_b_out
-        # Set Boozer radial profiles on selected surfaces
+            self.bmns_b = bmns_b
+            self.rmns_b = rmns_b
+            self.zmnc_b = zmnc_b
+            self.numnc_b = numnc_b
+            self.gmns_b = gmns_b
+
         self.Boozer_I = Boozer_I
         self.Boozer_G = Boozer_G
-        # Set s_b for selected surfaces
         self.s_b = _np.asarray(self.s_in)[self.compute_surfs]
-        # Results ready
-        return None
 
     # ------------------------------------------------------------------
     def register_surfaces(self, s: Iterable[int | float] | int | float) -> None:

@@ -115,7 +115,7 @@ def write_boozmn(self, filename: str) -> None:
             var.assignValue(value)
         else:
             setattr(ds, name, value)
-    put_scalar('ns_b', int(self.ns_in + 1))
+    put_scalar('ns_b', int(self.ns_b))
     put_scalar('nfp_b', int(self.nfp))
     put_scalar('mboz_b', int(self.mboz))
     put_scalar('nboz_b', int(self.nboz))
