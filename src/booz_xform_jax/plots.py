@@ -75,6 +75,10 @@ def surfplot(
     ntheta: int = 50,
     nphi: int = 90,
     ncontours: int = 25,
+    *,
+    ax: 'plt.Axes | None' = None,
+    show: bool = True,
+    savefig: str | None = None,
     **kwargs,
 ) -> None:
     """Plot |B| on a flux surface versus the Boozer angles.
@@ -118,15 +122,27 @@ def surfplot(
         modB += b.bmnc_b[jmn, js] * np.cos(angle)
         if b.asym and b.bmns_b is not None:
             modB += b.bmns_b[jmn, js] * np.sin(angle)
-    # Plot
-    if fill:
-        cs = plt.contourf(phi, theta, modB, ncontours, **kwargs)
+    # Plot using provided axes or a new figure
+    if ax is None:
+        fig, ax_local = plt.subplots(subplot_kw={})
     else:
-        cs = plt.contour(phi, theta, modB, ncontours, **kwargs)
-    plt.colorbar(cs)
-    plt.xlabel(r'Boozer toroidal angle $\varphi$')
-    plt.ylabel(r'Boozer poloidal angle $\theta$')
-    plt.title(f'|B| on surface s={float(b.s_b[js]):.4f}')
+        ax_local = ax
+    if fill:
+        cs = ax_local.contourf(phi, theta, modB, ncontours, **kwargs)
+    else:
+        cs = ax_local.contour(phi, theta, modB, ncontours, **kwargs)
+    # Add colourbar only when not using a custom axis
+    if ax is None:
+        fig.colorbar(cs, ax=ax_local)
+    ax_local.set_xlabel(r'Boozer toroidal angle $\varphi$')
+    ax_local.set_ylabel(r'Boozer poloidal angle $\theta$')
+    ax_local.set_title(f'|B| on surface s={float(b.s_b[js]):.4f}')
+    # Save and/or show the figure depending on user options
+    if savefig is not None and ax is None:
+        fig.savefig(savefig)
+    if show and ax is None:
+        plt.show()
+    return None
 
 
 def symplot(
@@ -139,6 +155,10 @@ def symplot(
     B0: bool = True,
     helical_detail: bool = False,
     legend_args: dict | None = None,
+    *,
+    ax: 'plt.Axes | None' = None,
+    show: bool = True,
+    savefig: str | None = None,
     **kwargs,
 ) -> None:
     """Plot radial variation of all Fourier modes of |B| grouped by symmetry.
@@ -187,53 +207,58 @@ def symplot(
     helical_color = [1, 0, 1]
     helical_plus_color = 'gray'
     helical_minus_color = 'c'
+    # Determine axis to plot on
+    if ax is None:
+        fig, ax_local = plt.subplots()
+    else:
+        ax_local = ax
     # Plot one example of each group for legend
     # (m,n)=(0,0)
     for imode in range(mnmax):
         if b.xm_b[imode] == 0 and b.xn_b[imode] == 0:
             if B0:
-                plt.plot(rad, my_abs(b.bmnc_b[imode, :]), color=background_color,
-                         label='m=0, n=0', **kwargs)
+                ax_local.plot(rad, my_abs(b.bmnc_b[imode, :]), color=background_color,
+                              label='m=0, n=0', **kwargs)
             break
     # (m≠0,n=0)
     for imode in range(mnmax):
         if b.xm_b[imode] != 0 and b.xn_b[imode] == 0:
-            plt.plot(rad, my_abs(b.bmnc_b[imode, :]), color=QA_color,
-                     label='m≠0, n=0', **kwargs)
+            ax_local.plot(rad, my_abs(b.bmnc_b[imode, :]), color=QA_color,
+                          label='m≠0, n=0', **kwargs)
             break
     # (m=0,n≠0)
     for imode in range(mnmax):
         if b.xm_b[imode] == 0 and b.xn_b[imode] != 0:
-            plt.plot(rad, my_abs(b.bmnc_b[imode, :]), color=mirror_color,
-                     label='m=0, n≠0', **kwargs)
+            ax_local.plot(rad, my_abs(b.bmnc_b[imode, :]), color=mirror_color,
+                          label='m=0, n≠0', **kwargs)
             break
     # Helical modes for legend
     if helical_detail:
         for imode in range(mnmax):
             if b.xm_b[imode] != 0 and b.xn_b[imode] == b.xm_b[imode] * b.nfp:
-                plt.plot(rad, my_abs(b.bmnc_b[imode, :]), color=helical_plus_color,
-                         label='n=nfp*m', **kwargs)
+                ax_local.plot(rad, my_abs(b.bmnc_b[imode, :]), color=helical_plus_color,
+                              label='n=nfp*m', **kwargs)
                 break
         for imode in range(mnmax):
             if b.xm_b[imode] != 0 and b.xn_b[imode] == -b.xm_b[imode] * b.nfp:
-                plt.plot(rad, my_abs(b.bmnc_b[imode, :]), color=helical_minus_color,
-                         label='n=-nfp*m', **kwargs)
+                ax_local.plot(rad, my_abs(b.bmnc_b[imode, :]), color=helical_minus_color,
+                              label='n=-nfp*m', **kwargs)
                 break
         for imode in range(mnmax):
             if b.xm_b[imode] != 0 and b.xn_b[imode] != 0 \
                and b.xn_b[imode] != b.xm_b[imode] * b.nfp \
                and b.xn_b[imode] != -b.xm_b[imode] * b.nfp:
-                plt.plot(rad, my_abs(b.bmnc_b[imode, :]), color=helical_color,
-                         label='other helical', **kwargs)
+                ax_local.plot(rad, my_abs(b.bmnc_b[imode, :]), color=helical_color,
+                              label='other helical', **kwargs)
                 break
     else:
         for imode in range(mnmax):
             if b.xm_b[imode] != 0 and b.xn_b[imode] != 0 and \
                b.xn_b[imode] != b.xm_b[imode] * b.nfp and b.xn_b[imode] != -b.xm_b[imode] * b.nfp:
-                plt.plot(rad, my_abs(b.bmnc_b[imode, :]), color=helical_color,
-                         label='helical', **kwargs)
+                ax_local.plot(rad, my_abs(b.bmnc_b[imode, :]), color=helical_color,
+                              label='helical', **kwargs)
                 break
-    plt.legend(**legend_args)
+    ax_local.legend(**legend_args)
     # Now plot all modes
     for imode in range(mnmax):
         m = b.xm_b[imode]
@@ -261,17 +286,23 @@ def symplot(
                         mycolor = helical_color
                 else:
                     mycolor = helical_color
-        plt.plot(rad, my_abs(b.bmnc_b[imode, :]), color=mycolor, **kwargs)
+        ax_local.plot(rad, my_abs(b.bmnc_b[imode, :]), color=mycolor, **kwargs)
     # Axes labels
     if sqrts:
-        plt.xlabel('$r/a$ = sqrt(normalized toroidal flux)')
+        ax_local.set_xlabel('$r/a$ = sqrt(normalized toroidal flux)')
     else:
-        plt.xlabel('$s$ = normalized toroidal flux')
-    plt.title('Fourier harmonics of |B| in Boozer coordinates')
-    plt.xlim([0, 1])
+        ax_local.set_xlabel('$s$ = normalized toroidal flux')
+    ax_local.set_title('Fourier harmonics of |B| in Boozer coordinates')
+    ax_local.set_xlim([0, 1])
     if log:
-        plt.yscale('log')
-        plt.gca().set_ylim(bottom=ymin)
+        ax_local.set_yscale('log')
+        ax_local.set_ylim(bottom=ymin)
+    # Save/show if using own figure
+    if savefig is not None and ax is None:
+        fig.savefig(savefig)
+    if show and ax is None:
+        plt.show()
+    return None
 
 
 def modeplot(
@@ -282,6 +313,10 @@ def modeplot(
     log: bool = True,
     B0: bool = True,
     legend_args: dict | None = None,
+    *,
+    ax: 'plt.Axes | None' = None,
+    show: bool = True,
+    savefig: str | None = None,
     **kwargs,
 ) -> None:
     """Plot the radial variation of the largest Fourier modes of |B|.
@@ -329,23 +364,34 @@ def modeplot(
     sorted_indices = np.argsort(-np.abs(data[:, -1]))
     indices = sorted_indices[:nmodes]
     rad = np.sqrt(b.s_b) if sqrts else b.s_b
-    def my_abs(x):
+    def my_abs(x: np.ndarray) -> np.ndarray:
         return np.abs(x) if log else x
-    if not log:
-        plt.plot([0,1],[0,0], ':k')
-    for index in indices:
-        plt.plot(rad, my_abs(data[index, :]),
-                 label=f'm={xm[index]}, n={xn[index]}', **kwargs)
-    plt.legend(**legend_args)
-    if sqrts:
-        plt.xlabel('$r/a$ = sqrt(normalized toroidal flux)')
+    # Determine axis
+    if ax is None:
+        fig, ax_local = plt.subplots()
     else:
-        plt.xlabel('$s$ = normalized toroidal flux')
-    plt.title('Largest Fourier harmonics of |B| in Boozer coordinates')
-    plt.xlim([0,1])
+        ax_local = ax
+    if not log:
+        ax_local.plot([0, 1], [0, 0], ':k')
+    for index in indices:
+        ax_local.plot(rad, my_abs(data[index, :]),
+                      label=f'm={xm[index]}, n={xn[index]}', **kwargs)
+    ax_local.legend(**legend_args)
+    if sqrts:
+        ax_local.set_xlabel('$r/a$ = sqrt(normalized toroidal flux)')
+    else:
+        ax_local.set_xlabel('$s$ = normalized toroidal flux')
+    ax_local.set_title('Largest Fourier harmonics of |B| in Boozer coordinates')
+    ax_local.set_xlim([0, 1])
     if log:
-        plt.yscale('log')
-        plt.gca().set_ylim(bottom=ymin)
+        ax_local.set_yscale('log')
+        ax_local.set_ylim(bottom=ymin)
+    # Save/show
+    if savefig is not None and ax is None:
+        fig.savefig(savefig)
+    if show and ax is None:
+        plt.show()
+    return None
 
 
 def wireplot(
@@ -356,6 +402,10 @@ def wireplot(
     refine: int = 3,
     surf: bool = True,
     orig: bool = True,
+    *,
+    ax: 'plt.Axes | None' = None,
+    show: bool = True,
+    savefig: str | None = None,
 ) -> None:
     """Make a 3D wireframe of curves of constant Boozer angles.
 
@@ -425,21 +475,26 @@ def wireplot(
     x = R * np.cos(phi_vmec)
     y = R * np.sin(phi_vmec)
     z = Z
-    # Prepare figure
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
+    # Prepare figure or reuse provided axes
+    created_fig = False
+    if ax is None:
+        fig = plt.figure()
+        ax_local = fig.add_subplot(111, projection='3d')
+        created_fig = True
+    else:
+        ax_local = ax
     # Draw surface
     if surf:
-        ax.plot_surface(x, y, z, alpha=0.3, linewidth=0, antialiased=False)
+        ax_local.plot_surface(x, y, z, alpha=0.3, linewidth=0, antialiased=False)
     # Draw Boozer coordinate curves
     # Poloidal curves: constant varphi index
     phi_indices = np.linspace(0, nphi0 - 1, nphi, dtype=int)
     for idx in phi_indices:
-        ax.plot(x[:, idx], y[:, idx], z[:, idx], color='k')
+        ax_local.plot(x[:, idx], y[:, idx], z[:, idx], color='k')
     # Toroidal curves: constant theta index
     theta_indices = np.linspace(0, ntheta0 - 1, ntheta, dtype=int)
     for idx in theta_indices:
-        ax.plot(x[idx, :], y[idx, :], z[idx, :], color='k')
+        ax_local.plot(x[idx, :], y[idx, :], z[idx, :], color='k')
     # Optionally overlay original VMEC coordinate curves
     if orig:
         # Original angles are simply theta and varphi; convert to Cartesian
@@ -447,13 +502,18 @@ def wireplot(
         y0 = R * np.sin(varphi)
         # Poloidal curves
         for idx in phi_indices:
-            ax.plot(x0[:, idx], y0[:, idx], z[:, idx], color='r', linestyle='--')
+            ax_local.plot(x0[:, idx], y0[:, idx], z[:, idx], color='r', linestyle='--')
         # Toroidal curves
         for idx in theta_indices:
-            ax.plot(x0[idx, :], y0[idx, :], z[idx, :], color='r', linestyle='--')
-    ax.set_xlabel('X [m]')
-    ax.set_ylabel('Y [m]')
-    ax.set_zlabel('Z [m]')
-    ax.set_title('Boozer coordinate wireframe on surface')
-    # Return the figure so that callers can further customise or close it
-    return fig
+            ax_local.plot(x0[idx, :], y0[idx, :], z[idx, :], color='r', linestyle='--')
+    ax_local.set_xlabel('X [m]')
+    ax_local.set_ylabel('Y [m]')
+    ax_local.set_zlabel('Z [m]')
+    ax_local.set_title('Boozer coordinate wireframe on surface')
+    # Save/show when we created a figure
+    if savefig is not None and created_fig:
+        fig.savefig(savefig)
+    if show and created_fig:
+        plt.show()
+    # Return the figure or None depending on whether we created it
+    return fig if created_fig else None

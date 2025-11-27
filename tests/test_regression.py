@@ -19,7 +19,7 @@ tested.  The optional flux arrays are exercised by toggling the
 import os
 import unittest
 import numpy as np
-from scipy.io import netcdf_file
+from netCDF4 import Dataset
 
 from booz_xform_jax import BoozXform
 
@@ -40,7 +40,7 @@ class RegressionTest(unittest.TestCase):
         for config in configurations:
             wout_filename = os.path.join(TEST_DIR, f'wout_{config}.nc')
             boozmn_filename = os.path.join(TEST_DIR, f'boozmn_{config}.nc')
-            f = netcdf_file(boozmn_filename, 'r', mmap=False)
+            f = Dataset(boozmn_filename, 'r')
             for flux in [True, False]:
                 b = Booz_xform()
                 b.read_wout(wout_filename, flux=flux)
@@ -62,18 +62,24 @@ class RegressionTest(unittest.TestCase):
                 for var in vars_to_compare:
                     # gmnc_b is misspelled as gmn_b in the reference files
                     var_ref_name = 'gmn_b' if var == 'gmnc_b' else var
-                    # For nu arrays the boozmn format stores p = -nu
-                    sign = -1 if var.startswith('numn') else 1
+
+                    # Handle the fact that boozmn stores p = -nu (pmns_b, pmnc_b, …)
+                    sign = 1
+                    if var.startswith('nu'):  # e.g. 'numns_b', 'numnc_b'
+                        sign = -1
+                        # Replace leading 'nu' with 'p' to get pmns_b / pmnc_b, etc.
+                        var_ref_name = 'p' + var[2:]
+
                     arr_ref = f.variables[var_ref_name][:]
                     arr_new = getattr(b, var).T  # b stores (mnboz, ns_b)
-                    # Check maximum difference for debugging
                     diff = np.max(np.abs(arr_ref - sign * arr_new))
                     print(f'max absolute diff in {var}:', diff)
-                    np.testing.assert_allclose(sign * arr_new, arr_ref, rtol=rtol, atol=atol)
+                    np.testing.assert_allclose(arr_ref, sign * arr_new, rtol=rtol, atol=atol)
+
                 # Compare select variables written to boozmn files
                 boozmn_new_filename = os.path.join(TEST_DIR, f'boozmn_new_{config}.nc')
                 b.write_boozmn(boozmn_new_filename)
-                f2 = netcdf_file(boozmn_new_filename)
+                f2 = Dataset(boozmn_new_filename, 'r')
                 vars_in_file = f.variables.keys()
                 # Variables excluded because they depend on optional flux profiles
                 if flux:
@@ -87,7 +93,7 @@ class RegressionTest(unittest.TestCase):
                     arr_new = f2.variables[var][:]
                     diff = np.max(np.abs(arr_ref - arr_new))
                     print(f'max absolute diff in {var}:', diff)
-                    np.testing.assert_allclose(arr_new, arr_ref, rtol=rtol, atol=atol)
+                    np.testing.assert_allclose(arr_ref, arr_new, rtol=rtol, atol=atol)
                 # Clean up temporary file
                 f2.close()
                 os.remove(boozmn_new_filename)

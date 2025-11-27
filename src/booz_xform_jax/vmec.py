@@ -188,10 +188,14 @@ def init_from_vmec(self, *args, s_in: Optional[_np.ndarray] = None) -> None:
     self.s_in = s_half.astype(float)
     self.ns_in = ns_in
 
-    # --- Radial interpolation for R, Z, lambda on half grid: rmnc, zmns (+ asym parts) ---
-    # rmnc0, zmns0, rmns0, zmnc0, lmns0, lmnc0 currently have shape (ns_full, mnmax)
+    # --- Radial interpolation for R and Z on half grid: rmnc, zmns (+ asym parts) ---
+    # rmnc0, zmns0, rmns0, zmnc0 currently have shape (ns_full, mnmax)
+    # We build rmnc_half and zmns_half by interpolating between full-grid points, as in the C++ code.
     rmnc_half = _np.empty((mnmax, ns_in), dtype=float)
     zmns_half = _np.empty((mnmax, ns_in), dtype=float)
+    # For lambda harmonics (lmns and lmnc), the VMEC output already stores values on the half grid,
+    # so we do NOT perform radial interpolation. Instead we drop the axis and transpose directly.
+    # See C++ init_from_vmec.cpp lines ~100-150 for reference.
     lmns_half = _np.empty((mnmax, ns_in), dtype=float)
     if asym:
         rmns_half = _np.empty((mnmax, ns_in), dtype=float)
@@ -200,48 +204,45 @@ def init_from_vmec(self, *args, s_in: Optional[_np.ndarray] = None) -> None:
     else:
         rmns_half = zmnc_half = lmnc_half = None
 
-    # Interpolate RMNC, ZMNS and LMNS from full grid (ns_full) to half grid (ns_in).
+    # Pre-compute the non-interpolated lambda values: drop axis for lmns0 and (if asym) lmnc0.
+    # VMEC arrays are stored as (ns_full, mnmax). We drop the first radial point and transpose.
+    for j in range(mnmax):
+        lmns_half[j, :] = lmns0[1:, j]
+        if asym:
+            lmnc_half[j, :] = lmnc0[1:, j]
+
+    # Interpolate RMNC and ZMNS from full grid (ns_full) to half grid (ns_in).
     # For even m: average adjacent full‑grid points
     # For odd m: interpolate f/√s on the full grid and multiply by √s on the half grid.
     for j in range(mnmax):
         m = int(self.xm[j])  # m values come from read_wout
         if m % 2 == 0:
-            rmnc_half[j,:] = 0.5*(rmnc0[:-1,j] + rmnc0[1:,j])
-            zmns_half[j,:] = 0.5*(zmns0[:-1,j] + zmns0[1:,j])
-            lmns_half[j,:] = 0.5*(lmns0[:-1,j] + lmns0[1:,j])
+            rmnc_half[j, :] = 0.5 * (rmnc0[:-1, j] + rmnc0[1:, j])
+            zmns_half[j, :] = 0.5 * (zmns0[:-1, j] + zmns0[1:, j])
             if asym:
-                rmns_half[j,:] = 0.5*(rmns0[:-1,j] + rmns0[1:,j])
-                zmnc_half[j,:] = 0.5*(zmnc0[:-1,j] + zmnc0[1:,j])
-                lmnc_half[j,:] = 0.5*(lmnc0[:-1,j] + lmnc0[1:,j])
+                rmns_half[j, :] = 0.5 * (rmns0[:-1, j] + rmns0[1:, j])
+                zmnc_half[j, :] = 0.5 * (zmnc0[:-1, j] + zmnc0[1:, j])
         else:
-            rmnc_half[j,:] = 0.5*((rmnc0[:-1,j]/sqrt_s_full[:-1]) +
-                                  (rmnc0[1:,j]/sqrt_s_full[1:])) * sqrt_s_half
-            zmns_half[j,:] = 0.5*((zmns0[:-1,j]/sqrt_s_full[:-1]) +
-                                  (zmns0[1:,j]/sqrt_s_full[1:])) * sqrt_s_half
-            lmns_half[j,:] = 0.5*((lmns0[:-1,j]/sqrt_s_full[:-1]) +
-                                  (lmns0[1:,j]/sqrt_s_full[1:])) * sqrt_s_half
+            rmnc_half[j, :] = 0.5 * ((rmnc0[:-1, j] / sqrt_s_full[:-1]) +
+                                     (rmnc0[1:, j] / sqrt_s_full[1:])) * sqrt_s_half
+            zmns_half[j, :] = 0.5 * ((zmns0[:-1, j] / sqrt_s_full[:-1]) +
+                                     (zmns0[1:, j] / sqrt_s_full[1:])) * sqrt_s_half
             if asym:
-                rmns_half[j,:] = 0.5*((rmns0[:-1,j]/sqrt_s_full[:-1]) +
-                                      (rmns0[1:,j]/sqrt_s_full[1:])) * sqrt_s_half
-                zmnc_half[j,:] = 0.5*((zmnc0[:-1,j]/sqrt_s_full[:-1]) +
-                                      (zmnc0[1:,j]/sqrt_s_full[1:])) * sqrt_s_half
-                lmnc_half[j,:] = 0.5*((lmnc0[:-1,j]/sqrt_s_full[:-1]) +
-                                      (lmnc0[1:,j]/sqrt_s_full[1:])) * sqrt_s_half
+                rmns_half[j, :] = 0.5 * ((rmns0[:-1, j] / sqrt_s_full[:-1]) +
+                                         (rmns0[1:, j] / sqrt_s_full[1:])) * sqrt_s_half
+                zmnc_half[j, :] = 0.5 * ((zmnc0[:-1, j] / sqrt_s_full[:-1]) +
+                                         (zmnc0[1:, j] / sqrt_s_full[1:])) * sqrt_s_half
             if m == 1:
-                # m=1 extrapolation at the axis
-                rmnc_half[j,0] = (1.5*rmnc0[1,j]/sqrt_s_full[1] -
-                                  0.5*rmnc0[2,j]/sqrt_s_full[2]) * sqrt_s_half[0]
-                zmns_half[j,0] = (1.5*zmns0[1,j]/sqrt_s_full[1] -
-                                  0.5*zmns0[2,j]/sqrt_s_full[2]) * sqrt_s_half[0]
-                lmns_half[j,0] = (1.5*lmns0[1,j]/sqrt_s_full[1] -
-                                  0.5*lmns0[2,j]/sqrt_s_full[2]) * sqrt_s_half[0]
+                # m=1 extrapolation at the axis for R and Z only (lambda handled separately)
+                rmnc_half[j, 0] = (1.5 * rmnc0[1, j] / sqrt_s_full[1] -
+                                   0.5 * rmnc0[2, j] / sqrt_s_full[2]) * sqrt_s_half[0]
+                zmns_half[j, 0] = (1.5 * zmns0[1, j] / sqrt_s_full[1] -
+                                   0.5 * zmns0[2, j] / sqrt_s_full[2]) * sqrt_s_half[0]
                 if asym:
-                    rmns_half[j,0] = (1.5*rmns0[1,j]/sqrt_s_full[1] -
-                                      0.5*rmns0[2,j]/sqrt_s_full[2]) * sqrt_s_half[0]
-                    zmnc_half[j,0] = (1.5*zmnc0[1,j]/sqrt_s_full[1] -
-                                      0.5*zmnc0[2,j]/sqrt_s_full[2]) * sqrt_s_half[0]
-                    lmnc_half[j,0] = (1.5*lmnc0[1,j]/sqrt_s_full[1] -
-                                      0.5*lmnc0[2,j]/sqrt_s_full[2]) * sqrt_s_half[0]
+                    rmns_half[j, 0] = (1.5 * rmns0[1, j] / sqrt_s_full[1] -
+                                       0.5 * rmns0[2, j] / sqrt_s_full[2]) * sqrt_s_half[0]
+                    zmnc_half[j, 0] = (1.5 * zmnc0[1, j] / sqrt_s_full[1] -
+                                       0.5 * zmnc0[2, j] / sqrt_s_full[2]) * sqrt_s_half[0]
 
     # Now store these in the same orientation as the C++ internal rmnc(jmn, js)
     # i.e. (mnmax, ns_in) as JAX arrays:

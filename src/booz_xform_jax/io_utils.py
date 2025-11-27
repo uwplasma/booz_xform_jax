@@ -74,13 +74,20 @@ def write_boozmn(self, filename: str) -> None:
     bmnc_b = _np.asarray(self.bmnc_b).T
     rmnc_b = _np.asarray(self.rmnc_b).T
     zmns_b = _np.asarray(self.zmns_b).T
-    pmns_b = -_np.asarray(self.numns_b).T
+
+    # Parallel current harmonics: pmns_b is minus numns_b, as in the original code
+    numns_b = _np.asarray(self.numns_b).T
+    pmns_b = -numns_b
+
     gmn_b = _np.asarray(self.gmnc_b).T
     if self.asym:
         bmns_b = _np.asarray(self.bmns_b).T
         rmns_b = _np.asarray(self.rmns_b).T
         zmnc_b = _np.asarray(self.zmnc_b).T
-        pmnc_b = -_np.asarray(self.numnc_b).T
+
+        numnc_b = _np.asarray(self.numnc_b).T
+        pmnc_b = -numnc_b
+
         gmns_b = _np.asarray(self.gmns_b).T
     # Attempt to use netCDF4 for writing; fall back to SciPy if necessary
     try:
@@ -116,7 +123,10 @@ def write_boozmn(self, filename: str) -> None:
             var.assignValue(value)
         else:
             setattr(ds, name, value)
-    put_scalar('ns_b', int(self.ns_b))
+    # ns_b in the original boozmn files is the number of VMEC radial grid points
+    # (the full "radius" grid, length ns_in + 1), *not* the number of packed
+    # Boozer surfaces (pack_rad). Use ns_in_plus_1 here to match the C++ booz_xform.
+    put_scalar('ns_b', int(ns_in_plus_1))
     put_scalar('nfp_b', int(self.nfp))
     put_scalar('mboz_b', int(self.mboz))
     put_scalar('nboz_b', int(self.nboz))
@@ -148,13 +158,21 @@ def write_boozmn(self, filename: str) -> None:
     ds.createVariable('bmnc_b', 'f8', dims)[:, :] = bmnc_b
     ds.createVariable('rmnc_b', 'f8', dims)[:, :] = rmnc_b
     ds.createVariable('zmns_b', 'f8', dims)[:, :] = zmns_b
+
+    # Parallel current and its minus sign variant (pmns_b = -numns_b)
+    ds.createVariable('numns_b', 'f8', dims)[:, :] = numns_b
     ds.createVariable('pmns_b', 'f8', dims)[:, :] = pmns_b
+
     ds.createVariable('gmn_b', 'f8', dims)[:, :] = gmn_b
+
     if self.asym:
         ds.createVariable('bmns_b', 'f8', dims)[:, :] = bmns_b
         ds.createVariable('rmns_b', 'f8', dims)[:, :] = rmns_b
         ds.createVariable('zmnc_b', 'f8', dims)[:, :] = zmnc_b
+
+        ds.createVariable('numnc_b', 'f8', dims)[:, :] = numnc_b
         ds.createVariable('pmnc_b', 'f8', dims)[:, :] = pmnc_b
+
         ds.createVariable('gmns_b', 'f8', dims)[:, :] = gmns_b
     # Close file
     ds.close()

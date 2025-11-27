@@ -202,7 +202,11 @@ class BoozXform:
     # VMEC parameters read from the wout file
     nfp: int = 1
     asym: bool = False
-    verbose: int = 1
+    # ``verbose`` controls how much diagnostic output is printed during
+    # the transform.  Any truthy value will enable printing; falsey
+    # values disable it.  Historically this was an integer so we retain
+    # that behaviour for backwards compatibility.
+    verbose: int | bool = 1
     mpol: int = 0
     ntor: int = 0
     mnmax: int = 0
@@ -412,7 +416,13 @@ class BoozXform:
                  Fourier coefficients B_{m,n}, R_{m,n}, Z_{m,n}, nu_{m,n},
                  and the Boozer Jacobian harmonics.
         """
-        if self.verbose > 0:
+        # Convert the verbose attribute to a simple boolean.  In the
+        # original implementation ``verbose`` was an integer; any
+        # non‑zero value should still enable output.  Users can set
+        # ``verbose=False`` to silence all prints.
+        _verbose = bool(self.verbose)
+
+        if _verbose:
             print("[booz_xform_jax] Starting Boozer transform")
             print(f"[booz_xform_jax] compute_surfs (0-based indices): {self.compute_surfs}")
             print(f"[booz_xform_jax] mboz={self.mboz}, nboz={self.nboz}")
@@ -454,7 +464,7 @@ class BoozXform:
         # Set up grids
         self._setup_grids()
 
-        if self.verbose > 0:
+        if _verbose:
             print(f"[booz_xform_jax] Grid resolution:")
             print(f"    ntheta={self._ntheta}, nzeta={self._nzeta}, total={self._n_theta_zeta}")
             print(f"    nfp={self.nfp}, ns_b={len(self.compute_surfs)}")
@@ -500,19 +510,26 @@ class BoozXform:
         Boozer_G = _np.zeros(ns_b, dtype=float)
 
         # Convenience views:
-        xm_non = jnp.asarray(self.xm, dtype=jnp.int32)
-        xn_non = jnp.asarray(self.xn, dtype=jnp.int32)
-        xm_nyq_arr = jnp.asarray(self.xm_nyq, dtype=jnp.int32)
-        xn_nyq_arr = jnp.asarray(self.xn_nyq, dtype=jnp.int32)
+        # Convert mode index arrays to plain NumPy arrays.  When using
+        # JAX DeviceArray objects as indices inside Python loops the
+        # comparison and boolean logic can behave unexpectedly.  Using
+        # NumPy here ensures that ``m`` and ``n`` are simple Python
+        # integers.  See the C++ reference implementation for the
+        # intended semantics.
+        xm_non = _np.asarray(self.xm, dtype=int)
+        xn_non = _np.asarray(self.xn, dtype=int)
+        xm_nyq_arr = _np.asarray(self.xm_nyq, dtype=int)
+        xn_nyq_arr = _np.asarray(self.xn_nyq, dtype=int)
 
-        if self.verbose > 0:
+        if _verbose:
             print("                   |        outboard (theta=0)      |      inboard (theta=pi)      |")
             print("thread js_b js zeta| |B|input  |B|Boozer    Error   | |B|input  |B|Boozer    Error |")
             print("------------------------------------------------------------------------------------")
 
         # Loop over surfaces js_b:
         for js_b, js in enumerate(self.compute_surfs):
-            if self.verbose > 1:
+            # Extra verbosity level greater than 1 prints per-surface information
+            if isinstance(self.verbose, int) and self.verbose > 1:
                 print(f"[booz_xform_jax] Solving surface js_b={js_b}, js={js}")
             # ---------------------------
             # Work arrays (length n_theta_zeta)
@@ -642,7 +659,7 @@ class BoozXform:
             dB_dvmec = (1.0 + dlam_dth) * (1.0 + dnu_dze) + \
                        (this_iota - dlam_dze) * dnu_dth
             
-            if self.verbose > 0:
+            if _verbose:
                 # Outboard = theta=0 slice
                 idx_ob = jnp.arange(0, self._nzeta)
                 # Inboard = theta = pi slice
@@ -787,6 +804,7 @@ class BoozXform:
                 )
             current.add(idx)
         self.compute_surfs = sorted(current)
-        if self.verbose > 0:
+        # respect the verbose flag: only print when truthy
+        if bool(self.verbose):
             print(f"[booz_xform_jax] Registered surfaces: {self.compute_surfs}")
         return None
