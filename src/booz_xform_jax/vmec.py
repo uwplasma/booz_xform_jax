@@ -206,43 +206,114 @@ def init_from_vmec(self, *args, s_in: Optional[_np.ndarray] = None) -> None:
 
     # Pre-compute the non-interpolated lambda values: drop axis for lmns0 and (if asym) lmnc0.
     # VMEC arrays are stored as (ns_full, mnmax). We drop the first radial point and transpose.
-    for j in range(mnmax):
-        lmns_half[j, :] = lmns0[1:, j]
-        if asym:
-            lmnc_half[j, :] = lmnc0[1:, j]
+    lmns_half[:, :] = lmns0[1:, :].T  # (ns_in, mnmax) -> (mnmax, ns_in)
+    if asym:
+        lmnc_half[:, :] = lmnc0[1:, :].T # (ns_in, mnmax) -> (mnmax, ns_in)
 
     # Interpolate RMNC and ZMNS from full grid (ns_full) to half grid (ns_in).
     # For even m: average adjacent full‑grid points
     # For odd m: interpolate f/√s on the full grid and multiply by √s on the half grid.
-    for j in range(mnmax):
-        m = int(self.xm[j])  # m values come from read_wout
-        if m % 2 == 0:
-            rmnc_half[j, :] = 0.5 * (rmnc0[:-1, j] + rmnc0[1:, j])
-            zmns_half[j, :] = 0.5 * (zmns0[:-1, j] + zmns0[1:, j])
+    # --- Radial interpolation for R and Z on half grid: rmnc, zmns (+ asym parts) ---
+    # rmnc0, zmns0, rmns0, zmnc0 currently have shape (ns_full, mnmax)
+    # We build rmnc_half and zmns_half by interpolating between full-grid points, as in the C++ code.
+    rmnc_half = _np.empty((mnmax, ns_in), dtype=float)
+    zmns_half = _np.empty((mnmax, ns_in), dtype=float)
+    # For lambda harmonics (lmns and lmnc), the VMEC output already stores values on the half grid,
+    # so we do NOT perform radial interpolation. Instead we drop the axis and transpose directly.
+    lmns_half = _np.empty((mnmax, ns_in), dtype=float)
+    if asym:
+        rmns_half = _np.empty((mnmax, ns_in), dtype=float)
+        zmnc_half = _np.empty((mnmax, ns_in), dtype=float)
+        lmnc_half = _np.empty((mnmax, ns_in), dtype=float)
+    else:
+        rmns_half = zmnc_half = lmnc_half = None
+
+    # Pre-compute the non-interpolated lambda values: drop axis for lmns0 and (if asym) lmnc0.
+    lmns_half[:, :] = lmns0[1:, :].T  # (ns_in, mnmax) -> (mnmax, ns_in)
+    if asym:
+        lmnc_half[:, :] = lmnc0[1:, :].T
+
+    # -------- NEW: fully vectorised interpolation over m --------
+    xm = _np.asarray(self.xm, dtype=int)  # m for each Fourier mode, length mnmax
+
+    even_mask = (xm % 2 == 0)
+    odd_mask = ~even_mask
+
+    even_idx = _np.nonzero(even_mask)[0]
+    odd_idx = _np.nonzero(odd_mask)[0]
+
+    # Even m: simple average of adjacent full-grid points
+    if even_idx.size > 0:
+        rmnc_half[even_idx, :] = 0.5 * (
+            rmnc0[:-1, even_idx] + rmnc0[1:, even_idx]
+        ).T
+        zmns_half[even_idx, :] = 0.5 * (
+            zmns0[:-1, even_idx] + zmns0[1:, even_idx]
+        ).T
+        if asym:
+            rmns_half[even_idx, :] = 0.5 * (
+                rmns0[:-1, even_idx] + rmns0[1:, even_idx]
+            ).T
+            zmnc_half[even_idx, :] = 0.5 * (
+                zmnc0[:-1, even_idx] + zmnc0[1:, even_idx]
+            ).T
+
+    # Odd m: interpolate f/√s on the full grid and multiply by √s on the half grid.
+    if odd_idx.size > 0:
+        # shapes: (ns_in, n_odd)
+        rmnc_odd = 0.5 * (
+            (rmnc0[:-1, odd_idx] / sqrt_s_full[:-1, None]) +
+            (rmnc0[1:,  odd_idx] / sqrt_s_full[1:,  None])
+        ) * sqrt_s_half[:, None]
+        zmns_odd = 0.5 * (
+            (zmns0[:-1, odd_idx] / sqrt_s_full[:-1, None]) +
+            (zmns0[1:,  odd_idx] / sqrt_s_full[1:,  None])
+        ) * sqrt_s_half[:, None]
+
+        rmnc_half[odd_idx, :] = rmnc_odd.T
+        zmns_half[odd_idx, :] = zmns_odd.T
+
+        if asym:
+            rmns_odd = 0.5 * (
+                (rmns0[:-1, odd_idx] / sqrt_s_full[:-1, None]) +
+                (rmns0[1:,  odd_idx] / sqrt_s_full[1:,  None])
+            ) * sqrt_s_half[:, None]
+            zmnc_odd = 0.5 * (
+                (zmnc0[:-1, odd_idx] / sqrt_s_full[:-1, None]) +
+                (zmnc0[1:,  odd_idx] / sqrt_s_full[1:,  None])
+            ) * sqrt_s_half[:, None]
+
+            rmns_half[odd_idx, :] = rmns_odd.T
+            zmnc_half[odd_idx, :] = zmnc_odd.T
+
+        # m = 1 special axis extrapolation (for all mn with m==1)
+        axis_idx = _np.nonzero(xm == 1)[0]
+        if axis_idx.size > 0:
+            # shape (axis_idx.size,)
+            rmnc_axis = (
+                1.5 * rmnc0[1, axis_idx] / sqrt_s_full[1]
+                - 0.5 * rmnc0[2, axis_idx] / sqrt_s_full[2]
+            ) * sqrt_s_half[0]
+            zmns_axis = (
+                1.5 * zmns0[1, axis_idx] / sqrt_s_full[1]
+                - 0.5 * zmns0[2, axis_idx] / sqrt_s_full[2]
+            ) * sqrt_s_half[0]
+
+            rmnc_half[axis_idx, 0] = rmnc_axis
+            zmns_half[axis_idx, 0] = zmns_axis
+
             if asym:
-                rmns_half[j, :] = 0.5 * (rmns0[:-1, j] + rmns0[1:, j])
-                zmnc_half[j, :] = 0.5 * (zmnc0[:-1, j] + zmnc0[1:, j])
-        else:
-            rmnc_half[j, :] = 0.5 * ((rmnc0[:-1, j] / sqrt_s_full[:-1]) +
-                                     (rmnc0[1:, j] / sqrt_s_full[1:])) * sqrt_s_half
-            zmns_half[j, :] = 0.5 * ((zmns0[:-1, j] / sqrt_s_full[:-1]) +
-                                     (zmns0[1:, j] / sqrt_s_full[1:])) * sqrt_s_half
-            if asym:
-                rmns_half[j, :] = 0.5 * ((rmns0[:-1, j] / sqrt_s_full[:-1]) +
-                                         (rmns0[1:, j] / sqrt_s_full[1:])) * sqrt_s_half
-                zmnc_half[j, :] = 0.5 * ((zmnc0[:-1, j] / sqrt_s_full[:-1]) +
-                                         (zmnc0[1:, j] / sqrt_s_full[1:])) * sqrt_s_half
-            if m == 1:
-                # m=1 extrapolation at the axis for R and Z only (lambda handled separately)
-                rmnc_half[j, 0] = (1.5 * rmnc0[1, j] / sqrt_s_full[1] -
-                                   0.5 * rmnc0[2, j] / sqrt_s_full[2]) * sqrt_s_half[0]
-                zmns_half[j, 0] = (1.5 * zmns0[1, j] / sqrt_s_full[1] -
-                                   0.5 * zmns0[2, j] / sqrt_s_full[2]) * sqrt_s_half[0]
-                if asym:
-                    rmns_half[j, 0] = (1.5 * rmns0[1, j] / sqrt_s_full[1] -
-                                       0.5 * rmns0[2, j] / sqrt_s_full[2]) * sqrt_s_half[0]
-                    zmnc_half[j, 0] = (1.5 * zmnc0[1, j] / sqrt_s_full[1] -
-                                       0.5 * zmnc0[2, j] / sqrt_s_full[2]) * sqrt_s_half[0]
+                rmns_axis = (
+                    1.5 * rmns0[1, axis_idx] / sqrt_s_full[1]
+                    - 0.5 * rmns0[2, axis_idx] / sqrt_s_full[2]
+                ) * sqrt_s_half[0]
+                zmnc_axis = (
+                    1.5 * zmnc0[1, axis_idx] / sqrt_s_full[1]
+                    - 0.5 * zmnc0[2, axis_idx] / sqrt_s_full[2]
+                ) * sqrt_s_half[0]
+
+                rmns_half[axis_idx, 0] = rmns_axis
+                zmnc_half[axis_idx, 0] = zmnc_axis
 
     # Now store these in the same orientation as the C++ internal rmnc(jmn, js)
     # i.e. (mnmax, ns_in) as JAX arrays:
