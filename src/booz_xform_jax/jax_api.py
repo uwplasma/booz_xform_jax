@@ -323,8 +323,15 @@ def booz_xform_jax_impl(
         if bsubvmns is not None:
             bsubvmns = jnp.take(bsubvmns, surface_indices, axis=0)
 
-    vmap_fn = jax.vmap(
-        lambda _rmnc, _zmns, _lmns, _bmnc, _bsubumnc, _bsubvmnc, _iota, _bmns, _bsubumns, _bsubvmns: _surface_transform(
+    xm_non_j = jnp.asarray(xm, dtype=jnp.int32)
+    xn_non_j = jnp.asarray(xn, dtype=jnp.int32)
+    xm_nyq_j = jnp.asarray(xm_nyq, dtype=jnp.int32)
+    xn_nyq_j = jnp.asarray(xn_nyq, dtype=jnp.int32)
+
+    def _surf(
+        _rmnc, _zmns, _lmns, _bmnc, _bsubumnc, _bsubvmnc, _iota, _bmns, _bsubumns, _bsubvmns
+    ):
+        return _surface_transform(
             _rmnc,
             _zmns,
             _lmns,
@@ -333,15 +340,16 @@ def booz_xform_jax_impl(
             _bsubvmnc,
             _iota,
             constants=constants,
-            xm_non=jnp.asarray(xm, dtype=jnp.int32),
-            xn_non=jnp.asarray(xn, dtype=jnp.int32),
-            xm_nyq=jnp.asarray(xm_nyq, dtype=jnp.int32),
-            xn_nyq=jnp.asarray(xn_nyq, dtype=jnp.int32),
+            xm_non=xm_non_j,
+            xn_non=xn_non_j,
+            xm_nyq=xm_nyq_j,
+            xn_nyq=xn_nyq_j,
             bmns=_bmns,
             bsubumns=_bsubumns,
             bsubvmns=_bsubvmns,
         )
-    )
+
+    vmap_fn = jax.vmap(_surf)
 
     bmns_in = bmns if bmns is not None else jnp.zeros_like(bmnc)
     bsubumns_in = bsubumns if bsubumns is not None else jnp.zeros_like(bsubumnc)
