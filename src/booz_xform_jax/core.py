@@ -122,80 +122,13 @@ except ImportError as e:  # pragma: no cover
 
 from .vmec import init_from_vmec, read_wout
 from .io_utils import write_boozmn, read_boozmn
+from .jax_api import booz_xform_jax_impl, prepare_booz_xform_constants
+from .trig import _init_trig
 
 
 # -----------------------------------------------------------------------------
 # Trigonometric table helper
 # -----------------------------------------------------------------------------
-
-
-@partial(jax.jit, static_argnums=(2, 3, 4))
-def _init_trig(
-    theta_grid: jnp.ndarray,
-    zeta_grid: jnp.ndarray,
-    mmax: int,
-    nmax: int,
-    nfp: int,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """
-    Build trigonometric tables on a flattened (theta, zeta) grid.
-
-    Parameters
-    ----------
-    theta_grid, zeta_grid :
-        1D arrays of length ``n_theta_zeta`` containing the flattened
-        tensor-product grid in angles. Typically these are produced by
-        :meth:`Booz_xform._setup_grids` via
-
-            theta_grid = repeat(theta_vals, nzeta_full)
-            zeta_grid  = tile(zeta_vals,  nu3_b)
-
-    mmax :
-        Maximum poloidal order :math:`m`.  We tabulate all m from
-        0 to ``mmax`` inclusive.
-
-    nmax :
-        Maximum *period* index for :math:`n/n_fp` (i.e.
-        :math:`n = k n_{fp}` with :math:`k` from 0 to ``nmax``).
-
-    nfp :
-        Number of field periods. The actual toroidal Fourier exponent
-        is :math:`n \zeta = (k n_{fp}) \zeta`.
-
-    Returns
-    -------
-    cosm, sinm, cosn, sinn :
-        Trigonometric tables with shapes
-
-            * ``cosm, sinm`` : (n_theta_zeta, mmax+1)
-            * ``cosn, sinn`` : (n_theta_zeta, nmax+1)
-
-        such that
-
-            cosm[j, m] = cos(m * theta_grid[j])
-            sinm[j, m] = sin(m * theta_grid[j])
-            cosn[j, k] = cos(k * nfp * zeta_grid[j])
-            sinn[j, k] = sin(k * nfp * zeta_grid[j])
-
-    Notes
-    -----
-    In the legacy C++ code these tables were built using trigonometric
-    recurrences to save flops. Here we use the direct JAX vectorised
-    definitions. On modern CPUs/GPUs this is both simple and fast, and
-    XLA will fuse the operations efficiently.
-    """
-    theta = theta_grid[:, None]  # (N, 1)
-    zeta = zeta_grid[:, None]    # (N, 1)
-
-    m_vals = jnp.arange(0, mmax + 1, dtype=jnp.float64)[None, :]  # (1, mmax+1)
-    n_vals = jnp.arange(0, nmax + 1, dtype=jnp.float64)[None, :]  # (1, nmax+1)
-
-    cosm = jnp.cos(theta * m_vals)       # (N, mmax+1)
-    sinm = jnp.sin(theta * m_vals)
-    cosn = jnp.cos(zeta * (n_vals * nfp))
-    sinn = jnp.sin(zeta * (n_vals * nfp))
-
-    return cosm, sinm, cosn, sinn
 
 
 # -----------------------------------------------------------------------------
@@ -1077,6 +1010,90 @@ class Booz_xform:
         self.Boozer_I = Boozer_I
         self.Boozer_G = Boozer_G
         self.s_b = _np.asarray(self.s_in)[self.compute_surfs]
+
+    def run_jax(self, *, jit: bool = True) -> dict:
+        """Run a JAX-native Boozer transform (no Python surface loop).
+
+        This method returns a mapping compatible with boozmn field names.
+        It is intended for end-to-end JIT/differentiable workflows and
+        does not populate the instance attributes (unlike `run`).
+        """
+        if self.rmnc is None or self.bmnc is None:
+            raise RuntimeError("VMEC data must be initialised before running the transform")
+        if self.ns_in is None:
+            raise RuntimeError("ns_in must be set; did init_from_vmec run correctly?")
+
+        # Default surfaces: all half-grid surfaces.
+        if self.compute_surfs is None:
+            compute_surfs = list(range(int(self.ns_in)))
+        else:
+            compute_surfs = list(self.compute_surfs)
+
+        # Default Boozer resolution: match VMEC angular resolution.
+        if self.mboz is None:
+            if self.mpol is None:
+                raise RuntimeError("mboz is not set and mpol is not available")
+            self.mboz = int(self.mpol)
+        if self.nboz is None:
+            if self.ntor is None:
+                raise RuntimeError("nboz is not set and ntor is not available")
+            self.nboz = int(self.ntor)
+
+        if self.mnboz is None or self.xm_b is None or self.xn_b is None:
+            self._prepare_mode_lists()
+
+        constants = prepare_booz_xform_constants(
+            nfp=int(self.nfp),
+            mboz=int(self.mboz),
+            nboz=int(self.nboz),
+            asym=bool(self.asym),
+            xm=self.xm,
+            xn=self.xn,
+            xm_nyq=self.xm_nyq,
+            xn_nyq=self.xn_nyq,
+        )
+
+        # Ensure surface dimension is first (ns, mn)
+        rmnc = jnp.asarray(_np.asarray(self.rmnc)).T
+        zmns = jnp.asarray(_np.asarray(self.zmns)).T
+        lmns = jnp.asarray(_np.asarray(self.lmns)).T
+        bmnc = jnp.asarray(_np.asarray(self.bmnc)).T
+        bsubumnc = jnp.asarray(_np.asarray(self.bsubumnc)).T
+        bsubvmnc = jnp.asarray(_np.asarray(self.bsubvmnc)).T
+        iota = jnp.asarray(_np.asarray(self.iota))
+
+        bmns = jnp.asarray(_np.asarray(self.bmns)).T if self.asym and self.bmns is not None else None
+        bsubumns = (
+            jnp.asarray(_np.asarray(self.bsubumns)).T if self.asym and self.bsubumns is not None else None
+        )
+        bsubvmns = (
+            jnp.asarray(_np.asarray(self.bsubvmns)).T if self.asym and self.bsubvmns is not None else None
+        )
+
+        surface_indices = jnp.asarray(compute_surfs, dtype=jnp.int32)
+
+        booz_fn = booz_xform_jax_impl
+        if jit:
+            booz_fn = jax.jit(booz_xform_jax_impl, static_argnames=("constants",))
+
+        return booz_fn(
+            rmnc=rmnc,
+            zmns=zmns,
+            lmns=lmns,
+            bmnc=bmnc,
+            bsubumnc=bsubumnc,
+            bsubvmnc=bsubvmnc,
+            iota=iota,
+            xm=jnp.asarray(self.xm, dtype=jnp.int32),
+            xn=jnp.asarray(self.xn, dtype=jnp.int32),
+            xm_nyq=jnp.asarray(self.xm_nyq, dtype=jnp.int32),
+            xn_nyq=jnp.asarray(self.xn_nyq, dtype=jnp.int32),
+            constants=constants,
+            bmns=bmns,
+            bsubumns=bsubumns,
+            bsubvmns=bsubvmns,
+            surface_indices=surface_indices,
+        )
 
     # ------------------------------------------------------------------
     # Surface registration (unchanged API)

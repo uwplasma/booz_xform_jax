@@ -15,7 +15,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from .core import _init_trig
+from .trig import _init_trig
 
 
 @dataclass(frozen=True)
@@ -131,10 +131,19 @@ def _surface_transform(
     iota: jnp.ndarray,
     *,
     constants: BoozXformConstants,
-    xm_non: jnp.ndarray,
-    xn_non: jnp.ndarray,
-    xm_nyq: jnp.ndarray,
-    xn_nyq: jnp.ndarray,
+    tcos_non: jnp.ndarray,
+    tsin_non: jnp.ndarray,
+    tcos_nyq: jnp.ndarray,
+    tsin_nyq: jnp.ndarray,
+    m_non_f: jnp.ndarray,
+    n_non_f: jnp.ndarray,
+    m_nyq_f: jnp.ndarray,
+    n_nyq_f: jnp.ndarray,
+    idx_theta0: jnp.ndarray,
+    idx_thetapi: jnp.ndarray,
+    m_b: jnp.ndarray,
+    abs_n_b: jnp.ndarray,
+    sign_b: jnp.ndarray,
     bmns: Optional[jnp.ndarray] = None,
     bsubumns: Optional[jnp.ndarray] = None,
     bsubvmns: Optional[jnp.ndarray] = None,
@@ -144,46 +153,8 @@ def _surface_transform(
     theta_grid = constants.theta_grid
     zeta_grid = constants.zeta_grid
 
-    # Precompute trig tables (non-Nyquist and Nyquist).
-    cosm, sinm, cosn, sinn = _init_trig(
-        theta_grid, zeta_grid, constants.mmax_non, constants.nmax_non, nfp
-    )
-    cosm_nyq, sinm_nyq, cosn_nyq, sinn_nyq = _init_trig(
-        theta_grid, zeta_grid, constants.mmax_nyq, constants.nmax_nyq, nfp
-    )
-
-    # Non-Nyquist trig combinations
-    cosm_m_non = jnp.take(cosm, xm_non, axis=1)
-    sinm_m_non = jnp.take(sinm, xm_non, axis=1)
-
-    abs_n_non = jnp.abs(xn_non // nfp)
-    cosn_n_non = jnp.take(cosn, abs_n_non, axis=1)
-    sinn_n_non = jnp.take(sinn, abs_n_non, axis=1)
-    sign_non = jnp.where(xn_non < 0, -1.0, 1.0)[None, :]
-
-    tcos_non = cosm_m_non * cosn_n_non + sinm_m_non * sinn_n_non * sign_non
-    tsin_non = sinm_m_non * cosn_n_non - cosm_m_non * sinn_n_non * sign_non
-
-    m_non_f = xm_non.astype(jnp.float64)
-    n_non_f = xn_non.astype(jnp.float64)
-
-    # Nyquist trig combinations
-    cosm_m_nyq = jnp.take(cosm_nyq, xm_nyq, axis=1)
-    sinm_m_nyq = jnp.take(sinm_nyq, xm_nyq, axis=1)
-
-    abs_n_nyq = jnp.abs(xn_nyq // nfp)
-    cosn_n_nyq = jnp.take(cosn_nyq, abs_n_nyq, axis=1)
-    sinn_n_nyq = jnp.take(sinn_nyq, abs_n_nyq, axis=1)
-    sign_nyq = jnp.where(xn_nyq < 0, -1.0, 1.0)[None, :]
-
-    tcos_nyq = cosm_m_nyq * cosn_n_nyq + sinm_m_nyq * sinn_n_nyq * sign_nyq
-    tsin_nyq = sinm_m_nyq * cosn_n_nyq - cosm_m_nyq * sinn_n_nyq * sign_nyq
-
-    m_nyq_f = xm_nyq.astype(jnp.float64)
-    n_nyq_f = xn_nyq.astype(jnp.float64)
-
     # Boozer I/G from m=n=0 Nyquist mode
-    idx00 = jnp.where((xm_nyq == 0) & (xn_nyq == 0), size=1)[0][0]
+    idx00 = jnp.where((m_nyq_f == 0) & (n_nyq_f == 0), size=1)[0][0]
     Boozer_I = bsubumnc[idx00]
     Boozer_G = bsubvmnc[idx00]
 
@@ -239,21 +210,12 @@ def _surface_transform(
     )
 
     if not constants.asym:
-        idx_theta0 = jnp.arange(0, constants.nzeta)
-        idx_thetapi = jnp.arange(
-            (constants.nu2_b - 1) * constants.nzeta, constants.nu2_b * constants.nzeta
-        )
         cosm_b = cosm_b.at[idx_theta0, :].set(cosm_b[idx_theta0, :] * 0.5)
         cosm_b = cosm_b.at[idx_thetapi, :].set(cosm_b[idx_thetapi, :] * 0.5)
         sinm_b = sinm_b.at[idx_theta0, :].set(sinm_b[idx_theta0, :] * 0.5)
         sinm_b = sinm_b.at[idx_thetapi, :].set(sinm_b[idx_thetapi, :] * 0.5)
 
     boozer_jac = GI / (bmod * bmod)
-
-    m_b = constants.xm_b
-    n_b = constants.xn_b
-    abs_n_b = jnp.abs(n_b // nfp)
-    sign_b = jnp.where(n_b < 0, -1.0, 1.0)[None, :]
 
     cosm_b_m = jnp.take(cosm_b, m_b, axis=1)
     sinm_b_m = jnp.take(sinm_b, m_b, axis=1)
@@ -328,6 +290,45 @@ def booz_xform_jax_impl(
     xm_nyq_j = jnp.asarray(xm_nyq, dtype=jnp.int32)
     xn_nyq_j = jnp.asarray(xn_nyq, dtype=jnp.int32)
 
+    # Precompute trig tables and mode combinations once for all surfaces.
+    cosm, sinm, cosn, sinn = _init_trig(
+        constants.theta_grid, constants.zeta_grid, constants.mmax_non, constants.nmax_non, constants.nfp
+    )
+    cosm_nyq, sinm_nyq, cosn_nyq, sinn_nyq = _init_trig(
+        constants.theta_grid, constants.zeta_grid, constants.mmax_nyq, constants.nmax_nyq, constants.nfp
+    )
+
+    cosm_m_non = jnp.take(cosm, xm_non_j, axis=1)
+    sinm_m_non = jnp.take(sinm, xm_non_j, axis=1)
+    abs_n_non = jnp.abs(xn_non_j // constants.nfp)
+    cosn_n_non = jnp.take(cosn, abs_n_non, axis=1)
+    sinn_n_non = jnp.take(sinn, abs_n_non, axis=1)
+    sign_non = jnp.where(xn_non_j < 0, -1.0, 1.0)[None, :]
+    tcos_non = cosm_m_non * cosn_n_non + sinm_m_non * sinn_n_non * sign_non
+    tsin_non = sinm_m_non * cosn_n_non - cosm_m_non * sinn_n_non * sign_non
+    m_non_f = xm_non_j.astype(jnp.float64)
+    n_non_f = xn_non_j.astype(jnp.float64)
+
+    cosm_m_nyq = jnp.take(cosm_nyq, xm_nyq_j, axis=1)
+    sinm_m_nyq = jnp.take(sinm_nyq, xm_nyq_j, axis=1)
+    abs_n_nyq = jnp.abs(xn_nyq_j // constants.nfp)
+    cosn_n_nyq = jnp.take(cosn_nyq, abs_n_nyq, axis=1)
+    sinn_n_nyq = jnp.take(sinn_nyq, abs_n_nyq, axis=1)
+    sign_nyq = jnp.where(xn_nyq_j < 0, -1.0, 1.0)[None, :]
+    tcos_nyq = cosm_m_nyq * cosn_n_nyq + sinm_m_nyq * sinn_n_nyq * sign_nyq
+    tsin_nyq = sinm_m_nyq * cosn_n_nyq - cosm_m_nyq * sinn_n_nyq * sign_nyq
+    m_nyq_f = xm_nyq_j.astype(jnp.float64)
+    n_nyq_f = xn_nyq_j.astype(jnp.float64)
+
+    idx_theta0 = jnp.arange(0, constants.nzeta)
+    idx_thetapi = jnp.arange(
+        (constants.nu2_b - 1) * constants.nzeta, constants.nu2_b * constants.nzeta
+    )
+
+    m_b = constants.xm_b
+    abs_n_b = jnp.abs(constants.xn_b // constants.nfp)
+    sign_b = jnp.where(constants.xn_b < 0, -1.0, 1.0)[None, :]
+
     def _surf(
         _rmnc, _zmns, _lmns, _bmnc, _bsubumnc, _bsubvmnc, _iota, _bmns, _bsubumns, _bsubvmns
     ):
@@ -340,10 +341,19 @@ def booz_xform_jax_impl(
             _bsubvmnc,
             _iota,
             constants=constants,
-            xm_non=xm_non_j,
-            xn_non=xn_non_j,
-            xm_nyq=xm_nyq_j,
-            xn_nyq=xn_nyq_j,
+            tcos_non=tcos_non,
+            tsin_non=tsin_non,
+            tcos_nyq=tcos_nyq,
+            tsin_nyq=tsin_nyq,
+            m_non_f=m_non_f,
+            n_non_f=n_non_f,
+            m_nyq_f=m_nyq_f,
+            n_nyq_f=n_nyq_f,
+            idx_theta0=idx_theta0,
+            idx_thetapi=idx_thetapi,
+            m_b=m_b,
+            abs_n_b=abs_n_b,
+            sign_b=sign_b,
             bmns=_bmns,
             bsubumns=_bsubumns,
             bsubvmns=_bsubvmns,

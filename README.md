@@ -306,6 +306,26 @@ out = booz_fn(
 )
 ```
 
+### 5.3 Fast-track examples
+
+Fast JAX-native examples live in `examples/`:
+
+- `example_li383_jax_api_fast.py`: JIT Boozer transform with no Python surface loop.
+- `example_li383_autodiff_opt.py`: toy autodiff optimization of Boozer |B| harmonics.
+
+If you prefer a class-based API, `Booz_xform.run_jax()` provides the same
+JAX-native transform without the Python surface loop and returns a boozmn-like
+mapping.
+
+### 5.4 Profiling
+
+Use `tools/profile_jax_api.py` to generate a TensorBoard trace for the
+JAX-native path:
+
+```bash
+python tools/profile_jax_api.py
+```
+
 These examples correspond closely to the documentation and figures in:
 - <https://hiddensymmetries.github.io/booz_xform/usage.html>  
 

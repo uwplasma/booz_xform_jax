@@ -69,3 +69,21 @@ def test_jax_api_matches_reference_small():
         rtol=5e-6,
         atol=1e-8,
     )
+
+
+def test_run_jax_matches_run():
+    b = Booz_xform()
+    b.read_wout(os.path.join(TEST_DIR, "wout_li383_1.4m.nc"))
+    b.mboz = 4
+    b.nboz = 4
+    b.compute_surfs = [0]
+    b.run()
+
+    out = b.run_jax(jit=False)
+
+    np.testing.assert_allclose(
+        np.asarray(out["bmnc_b"])[0],
+        np.asarray(b.bmnc_b)[:, 0],
+        rtol=5e-6,
+        atol=1e-8,
+    )
