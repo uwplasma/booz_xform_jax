@@ -15,6 +15,7 @@ from .core import Booz_xform
 from .plots import surfplot, symplot, modeplot, wireplot
 from .jax_api import (
     BoozXformConstants,
+    BoozXformGrids,
     booz_xform_jax,
     booz_xform_jax_impl,
     prepare_booz_xform_constants,
@@ -32,6 +33,7 @@ __all__ = [
     "modeplot",
     "wireplot",
     "BoozXformConstants",
+    "BoozXformGrids",
     "prepare_booz_xform_constants",
     "booz_xform_jax",
     "booz_xform_jax_impl",

@@ -1042,7 +1042,7 @@ class Booz_xform:
         if self.mnboz is None or self.xm_b is None or self.xn_b is None:
             self._prepare_mode_lists()
 
-        constants = prepare_booz_xform_constants(
+        constants, grids = prepare_booz_xform_constants(
             nfp=int(self.nfp),
             mboz=int(self.mboz),
             nboz=int(self.nboz),
@@ -1089,6 +1089,7 @@ class Booz_xform:
             xm_nyq=jnp.asarray(self.xm_nyq, dtype=jnp.int32),
             xn_nyq=jnp.asarray(self.xn_nyq, dtype=jnp.int32),
             constants=constants,
+            grids=grids,
             bmns=bmns,
             bsubumns=bsubumns,
             bsubvmns=bsubvmns,

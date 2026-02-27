@@ -29,14 +29,30 @@ class BoozXformConstants:
     ntheta: int
     nzeta: int
     nu2_b: int
-    theta_grid: jnp.ndarray
-    zeta_grid: jnp.ndarray
-    xm_b: jnp.ndarray
-    xn_b: jnp.ndarray
     mmax_non: int
     nmax_non: int
     mmax_nyq: int
     nmax_nyq: int
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class BoozXformGrids:
+    """Grid arrays for the JAX Boozer transform."""
+
+    theta_grid: jnp.ndarray
+    zeta_grid: jnp.ndarray
+    xm_b: jnp.ndarray
+    xn_b: jnp.ndarray
+
+    def tree_flatten(self):
+        children = (self.theta_grid, self.zeta_grid, self.xm_b, self.xn_b)
+        return children, None
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        theta_grid, zeta_grid, xm_b, xn_b = children
+        return cls(theta_grid=theta_grid, zeta_grid=zeta_grid, xm_b=xm_b, xn_b=xn_b)
 
 
 def _prepare_mode_lists(mboz: int, nboz: int, nfp: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -84,7 +100,7 @@ def prepare_booz_xform_constants(
     xn: Sequence[int],
     xm_nyq: Sequence[int],
     xn_nyq: Sequence[int],
-) -> BoozXformConstants:
+) -> tuple[BoozXformConstants, BoozXformGrids]:
     """Compute static constants for the JAX Boozer transform.
 
     This helper runs on the host and can be used before JIT compilation.
@@ -102,7 +118,7 @@ def prepare_booz_xform_constants(
     ntheta, nzeta, nu2_b, theta_grid, zeta_grid = _prepare_grids(mboz, nboz, nfp, asym)
     xm_b, xn_b = _prepare_mode_lists(mboz, nboz, nfp)
 
-    return BoozXformConstants(
+    constants = BoozXformConstants(
         nfp=nfp,
         mboz=mboz,
         nboz=nboz,
@@ -110,15 +126,20 @@ def prepare_booz_xform_constants(
         ntheta=ntheta,
         nzeta=nzeta,
         nu2_b=nu2_b,
-        theta_grid=theta_grid,
-        zeta_grid=zeta_grid,
-        xm_b=jnp.asarray(xm_b, dtype=jnp.int32),
-        xn_b=jnp.asarray(xn_b, dtype=jnp.int32),
         mmax_non=mmax_non,
         nmax_non=nmax_non,
         mmax_nyq=mmax_nyq,
         nmax_nyq=nmax_nyq,
     )
+
+    grids = BoozXformGrids(
+        theta_grid=theta_grid,
+        zeta_grid=zeta_grid,
+        xm_b=jnp.asarray(xm_b, dtype=jnp.int32),
+        xn_b=jnp.asarray(xn_b, dtype=jnp.int32),
+    )
+
+    return constants, grids
 
 
 def _surface_transform(
@@ -131,6 +152,7 @@ def _surface_transform(
     iota: jnp.ndarray,
     *,
     constants: BoozXformConstants,
+    grids: BoozXformGrids,
     tcos_non: jnp.ndarray,
     tsin_non: jnp.ndarray,
     tcos_nyq: jnp.ndarray,
@@ -150,8 +172,8 @@ def _surface_transform(
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Compute Boozer spectra for a single surface."""
     nfp = constants.nfp
-    theta_grid = constants.theta_grid
-    zeta_grid = constants.zeta_grid
+    theta_grid = grids.theta_grid
+    zeta_grid = grids.zeta_grid
 
     # Boozer I/G from m=n=0 Nyquist mode
     idx00 = jnp.where((m_nyq_f == 0) & (n_nyq_f == 0), size=1)[0][0]
@@ -230,7 +252,7 @@ def _surface_transform(
     else:
         fourier_factor0 = 2.0 / ((constants.nu2_b - 1) * constants.nzeta)
 
-    fourier_factor = jnp.ones((constants.xm_b.shape[0],), dtype=jnp.float64) * fourier_factor0
+    fourier_factor = jnp.ones((m_b.shape[0],), dtype=jnp.float64) * fourier_factor0
     fourier_factor = fourier_factor.at[0].set(fourier_factor0 * 0.5)
 
     weight = dB_dvmec[:, None] * fourier_factor[None, :]
@@ -260,6 +282,7 @@ def booz_xform_jax_impl(
     xm_nyq: jnp.ndarray,
     xn_nyq: jnp.ndarray,
     constants: BoozXformConstants,
+    grids: BoozXformGrids,
     bmns: Optional[jnp.ndarray] = None,
     bsubumns: Optional[jnp.ndarray] = None,
     bsubvmns: Optional[jnp.ndarray] = None,
@@ -292,10 +315,10 @@ def booz_xform_jax_impl(
 
     # Precompute trig tables and mode combinations once for all surfaces.
     cosm, sinm, cosn, sinn = _init_trig(
-        constants.theta_grid, constants.zeta_grid, constants.mmax_non, constants.nmax_non, constants.nfp
+        grids.theta_grid, grids.zeta_grid, constants.mmax_non, constants.nmax_non, constants.nfp
     )
     cosm_nyq, sinm_nyq, cosn_nyq, sinn_nyq = _init_trig(
-        constants.theta_grid, constants.zeta_grid, constants.mmax_nyq, constants.nmax_nyq, constants.nfp
+        grids.theta_grid, grids.zeta_grid, constants.mmax_nyq, constants.nmax_nyq, constants.nfp
     )
 
     cosm_m_non = jnp.take(cosm, xm_non_j, axis=1)
@@ -325,9 +348,9 @@ def booz_xform_jax_impl(
         (constants.nu2_b - 1) * constants.nzeta, constants.nu2_b * constants.nzeta
     )
 
-    m_b = constants.xm_b
-    abs_n_b = jnp.abs(constants.xn_b // constants.nfp)
-    sign_b = jnp.where(constants.xn_b < 0, -1.0, 1.0)[None, :]
+    m_b = grids.xm_b
+    abs_n_b = jnp.abs(grids.xn_b // constants.nfp)
+    sign_b = jnp.where(grids.xn_b < 0, -1.0, 1.0)[None, :]
 
     def _surf(
         _rmnc, _zmns, _lmns, _bmnc, _bsubumnc, _bsubvmnc, _iota, _bmns, _bsubumns, _bsubvmns
@@ -341,6 +364,7 @@ def booz_xform_jax_impl(
             _bsubvmnc,
             _iota,
             constants=constants,
+            grids=grids,
             tcos_non=tcos_non,
             tsin_non=tsin_non,
             tcos_nyq=tcos_nyq,
@@ -383,8 +407,8 @@ def booz_xform_jax_impl(
 
     return {
         "nfp_b": jnp.asarray(constants.nfp),
-        "ixm_b": jnp.asarray(constants.xm_b),
-        "ixn_b": jnp.asarray(constants.xn_b),
+        "ixm_b": jnp.asarray(grids.xm_b),
+        "ixn_b": jnp.asarray(grids.xn_b),
         "iota_b": iota,
         "buco_b": Boozer_I,
         "bvco_b": Boozer_G,
@@ -424,7 +448,7 @@ def booz_xform_jax(
     returns a JAX output dictionary. For full JIT, call
     :func:`booz_xform_jax_impl` directly with precomputed constants.
     """
-    constants = prepare_booz_xform_constants(
+    constants, grids = prepare_booz_xform_constants(
         nfp=nfp,
         mboz=mboz,
         nboz=nboz,
@@ -452,6 +476,7 @@ def booz_xform_jax(
         xm_nyq=jnp.asarray(xm_nyq, dtype=jnp.int32),
         xn_nyq=jnp.asarray(xn_nyq, dtype=jnp.int32),
         constants=constants,
+        grids=grids,
         bmns=jnp.asarray(bmns) if bmns is not None else None,
         bsubumns=jnp.asarray(bsubumns) if bsubumns is not None else None,
         bsubvmns=jnp.asarray(bsubvmns) if bsubvmns is not None else None,

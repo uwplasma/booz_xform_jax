@@ -278,7 +278,7 @@ out = booz_xform_jax(
 )
 
 # JIT-friendly path: precompute constants and jit the core.
-constants = prepare_booz_xform_constants(
+constants, grids = prepare_booz_xform_constants(
     nfp=bx.nfp,
     mboz=bx.mboz,
     nboz=bx.nboz,
@@ -303,6 +303,7 @@ out = booz_fn(
     xm_nyq=jnp.asarray(bx.xm_nyq),
     xn_nyq=jnp.asarray(bx.xn_nyq),
     constants=constants,
+    grids=grids,
 )
 ```
 

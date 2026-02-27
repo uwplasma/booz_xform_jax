@@ -18,7 +18,7 @@ def main() -> None:
     bx.nboz = 8
     bx.compute_surfs = [0, 5, 10]
 
-    constants = prepare_booz_xform_constants(
+    constants, grids = prepare_booz_xform_constants(
         nfp=bx.nfp,
         mboz=bx.mboz,
         nboz=bx.nboz,
@@ -52,6 +52,7 @@ def main() -> None:
         xm_nyq=jnp.asarray(bx.xm_nyq),
         xn_nyq=jnp.asarray(bx.xn_nyq),
         constants=constants,
+        grids=grids,
         surface_indices=jnp.asarray(bx.compute_surfs),
     )
 
