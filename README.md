@@ -232,6 +232,80 @@ plots.modeplot(bx, nmodes=10)
 plots.wireplot(bx, js=-1)
 ```
 
+### 5.2 JAX-native functional API (end-to-end differentiation)
+
+For JIT-native workflows, use the functional API in
+`booz_xform_jax.jax_api`. This avoids Python loops over surfaces and
+keeps all arrays in JAX.
+
+```python
+import jax
+import jax.numpy as jnp
+from booz_xform_jax import Booz_xform
+from booz_xform_jax.jax_api import booz_xform_jax, prepare_booz_xform_constants, booz_xform_jax_impl
+
+bx = Booz_xform()
+bx.read_wout("tests/test_files/wout_li383_1.4m.nc")
+bx.mboz = 8
+bx.nboz = 8
+
+# Prepare JAX arrays with surface dimension first (ns, mn).
+rmnc = jnp.asarray(bx.rmnc).T
+zmns = jnp.asarray(bx.zmns).T
+lmns = jnp.asarray(bx.lmns).T
+bmnc = jnp.asarray(bx.bmnc).T
+bsubumnc = jnp.asarray(bx.bsubumnc).T
+bsubvmnc = jnp.asarray(bx.bsubvmnc).T
+iota = jnp.asarray(bx.iota)
+
+# Host-side wrapper:
+out = booz_xform_jax(
+    rmnc=rmnc,
+    zmns=zmns,
+    lmns=lmns,
+    bmnc=bmnc,
+    bsubumnc=bsubumnc,
+    bsubvmnc=bsubvmnc,
+    iota=iota,
+    xm=bx.xm,
+    xn=bx.xn,
+    xm_nyq=bx.xm_nyq,
+    xn_nyq=bx.xn_nyq,
+    nfp=bx.nfp,
+    mboz=bx.mboz,
+    nboz=bx.nboz,
+    surface_indices=[0, 5, 10],
+)
+
+# JIT-friendly path: precompute constants and jit the core.
+constants = prepare_booz_xform_constants(
+    nfp=bx.nfp,
+    mboz=bx.mboz,
+    nboz=bx.nboz,
+    asym=bool(bx.asym),
+    xm=bx.xm,
+    xn=bx.xn,
+    xm_nyq=bx.xm_nyq,
+    xn_nyq=bx.xn_nyq,
+)
+
+booz_fn = jax.jit(booz_xform_jax_impl, static_argnames=("constants",))
+out = booz_fn(
+    rmnc=rmnc,
+    zmns=zmns,
+    lmns=lmns,
+    bmnc=bmnc,
+    bsubumnc=bsubumnc,
+    bsubvmnc=bsubvmnc,
+    iota=iota,
+    xm=jnp.asarray(bx.xm),
+    xn=jnp.asarray(bx.xn),
+    xm_nyq=jnp.asarray(bx.xm_nyq),
+    xn_nyq=jnp.asarray(bx.xn_nyq),
+    constants=constants,
+)
+```
+
 These examples correspond closely to the documentation and figures in:
 - <https://hiddensymmetries.github.io/booz_xform/usage.html>  
 

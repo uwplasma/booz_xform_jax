@@ -13,6 +13,12 @@ automatic differentiation.  See the documentation in
 # should import Booz_xform from ``booz_xform_jax`` directly.
 from .core import Booz_xform
 from .plots import surfplot, symplot, modeplot, wireplot
+from .jax_api import (
+    BoozXformConstants,
+    booz_xform_jax,
+    booz_xform_jax_impl,
+    prepare_booz_xform_constants,
+)
 
 # Version is defined here for convenience.  It must match the value in
 # pyproject.toml for consistency.  Updating the version in one place
@@ -25,5 +31,9 @@ __all__ = [
     "symplot",
     "modeplot",
     "wireplot",
+    "BoozXformConstants",
+    "prepare_booz_xform_constants",
+    "booz_xform_jax",
+    "booz_xform_jax_impl",
     "__version__",
 ]
