@@ -11,12 +11,17 @@ from booz_xform_jax import Booz_xform
 from booz_xform_jax.jax_api import prepare_booz_xform_constants, booz_xform_jax_impl
 
 
+def _default_wout_path() -> Path:
+    repo_root = Path(__file__).resolve().parents[1]
+    return repo_root / "tests" / "test_files" / "wout_li383_1.4m.nc"
+
+
 def main() -> None:
     out_dir = Path("profiles/booz_xform_jax_trace")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     bx = Booz_xform()
-    bx.read_wout("tests/test_files/wout_li383_1.4m.nc")
+    bx.read_wout(str(_default_wout_path()))
     bx.mboz = 8
     bx.nboz = 8
     bx.compute_surfs = [0, 5, 10]

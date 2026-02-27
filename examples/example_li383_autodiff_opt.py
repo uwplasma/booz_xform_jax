@@ -6,6 +6,8 @@ non-axisymmetric |B| harmonics on a single surface.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
 
@@ -13,9 +15,14 @@ from booz_xform_jax import Booz_xform
 from booz_xform_jax.jax_api import prepare_booz_xform_constants, booz_xform_jax_impl
 
 
+def _default_wout_path() -> Path:
+    repo_root = Path(__file__).resolve().parents[1]
+    return repo_root / "tests" / "test_files" / "wout_li383_1.4m.nc"
+
+
 def main() -> None:
     bx = Booz_xform()
-    bx.read_wout("tests/test_files/wout_li383_1.4m.nc")
+    bx.read_wout(str(_default_wout_path()))
 
     bx.mboz = 8
     bx.nboz = 8

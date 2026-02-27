@@ -603,3 +603,118 @@ def read_wout(self, filename: str, flux: bool = False) -> None:
     self.aspect = aspect0
 
     return None
+
+
+def read_wout_data(self, wout, flux: bool = False) -> None:
+    """Populate the instance from a VMEC wout-like object (e.g. vmec_jax.WoutData).
+
+    This mirrors :func:`read_wout` but accepts an in-memory object with the
+    standard VMEC fields as attributes instead of reading a NetCDF file.
+
+    Parameters
+    ----------
+    self : Booz_xform
+        The instance to populate.
+    wout : object
+        A wout-like object with VMEC attributes (e.g. ``vmec_jax.WoutData``).
+    flux : bool, optional
+        If ``True``, attempt to populate flux profile arrays. When the
+        required fields are unavailable, the profiles are silently skipped
+        to match ``read_wout`` behavior.
+    """
+    if self.verbose > 0:
+        print("[booz_xform_jax] Reading wout data from object")
+
+    lasym = bool(getattr(wout, "lasym", getattr(wout, "asym", False)))
+    self.asym = lasym
+    self.nfp = int(getattr(wout, "nfp"))
+    self.mpol = int(getattr(wout, "mpol"))
+    self.ntor = int(getattr(wout, "ntor"))
+    self.xm = _np.asarray(getattr(wout, "xm"), dtype=int)
+    self.xn = _np.asarray(getattr(wout, "xn"), dtype=int)
+    self.xm_nyq = _np.asarray(getattr(wout, "xm_nyq"), dtype=int)
+    self.xn_nyq = _np.asarray(getattr(wout, "xn_nyq"), dtype=int)
+    self.mnmax = int(self.xm.shape[0])
+    self.mnmax_nyq = int(self.xm_nyq.shape[0])
+    self.mpol_nyq = int(self.xm_nyq[-1]) if self.xm_nyq.size else 0
+    self.ntor_nyq = int(self.xn_nyq[-1] // self.nfp) if self.xn_nyq.size else 0
+    self.ns_vmec = int(getattr(wout, "ns", getattr(wout, "ns_vmec", 0)))
+
+    if self.verbose > 0:
+        print(f"[booz_xform_jax]   mpol={self.mpol}, ntor={self.ntor}, mnmax={self.mnmax}")
+        print(f"[booz_xform_jax]   mpol_nyq={self.mpol_nyq}, ntor_nyq={self.ntor_nyq}, mnmax_nyq={self.mnmax_nyq}")
+
+    rmnc0 = _np.asarray(getattr(wout, "rmnc"))
+    rmns0 = _np.asarray(getattr(wout, "rmns")) if self.asym else _np.zeros_like(rmnc0)
+    zmnc0 = _np.asarray(getattr(wout, "zmnc")) if self.asym else _np.zeros_like(rmnc0)
+    zmns0 = _np.asarray(getattr(wout, "zmns"))
+    lmnc0 = _np.asarray(getattr(wout, "lmnc")) if self.asym else _np.zeros_like(rmnc0)
+    lmns0 = _np.asarray(getattr(wout, "lmns"))
+
+    bmnc0 = _np.asarray(getattr(wout, "bmnc"))
+    bmns0 = _np.asarray(getattr(wout, "bmns")) if self.asym else _np.zeros_like(bmnc0)
+    bsubumnc0 = _np.asarray(getattr(wout, "bsubumnc"))
+    bsubumns0 = _np.asarray(getattr(wout, "bsubumns")) if self.asym else _np.zeros_like(bmnc0)
+    bsubvmnc0 = _np.asarray(getattr(wout, "bsubvmnc"))
+    bsubvmns0 = _np.asarray(getattr(wout, "bsubvmns")) if self.asym else _np.zeros_like(bmnc0)
+
+    ns = rmnc0.shape[0]
+    iotas = _np.asarray(getattr(wout, "iotas"))
+
+    aspect0 = float(getattr(wout, "aspect", 0.0))
+
+    def integrate_uniform(values: _np.ndarray) -> _np.ndarray:
+        values = _np.asarray(values, dtype=float)
+        if values.ndim != 1:
+            raise ValueError("flux arrays must be 1D")
+        if values.size < 2:
+            return values.copy()
+        ds = 1.0 / (values.size - 1.0)
+        out = _np.zeros_like(values, dtype=float)
+        out[1:] = _np.cumsum(0.5 * ds * (values[:-1] + values[1:]))
+        return out
+
+    phip0 = chi0 = pres0 = phi0 = None
+    if flux:
+        if hasattr(wout, "phipf"):
+            phip0 = _np.asarray(getattr(wout, "phipf"))
+        elif hasattr(wout, "phips"):
+            phip0 = _np.asarray(getattr(wout, "phips"))
+
+        if hasattr(wout, "chi"):
+            chi0 = _np.asarray(getattr(wout, "chi"))
+        elif hasattr(wout, "chipf"):
+            chi0 = integrate_uniform(_np.asarray(getattr(wout, "chipf")))
+
+        if hasattr(wout, "presf"):
+            pres0 = _np.asarray(getattr(wout, "presf"))
+        elif hasattr(wout, "pres"):
+            pres0 = _np.asarray(getattr(wout, "pres"))
+
+        if hasattr(wout, "phi"):
+            phi0 = _np.asarray(getattr(wout, "phi"))
+        elif phip0 is not None:
+            phi0 = integrate_uniform(phip0)
+
+    args = [ns, iotas]
+    args.extend([
+        rmnc0,
+        rmns0,
+        zmnc0,
+        zmns0,
+        lmnc0,
+        lmns0,
+        bmnc0,
+        bmns0,
+        bsubumnc0,
+        bsubumns0,
+        bsubvmnc0,
+        bsubvmns0,
+    ])
+    if flux and phip0 is not None and chi0 is not None and pres0 is not None and phi0 is not None:
+        args.extend([phip0, chi0, pres0, phi0])
+
+    init_from_vmec(self, *args)
+    self.aspect = aspect0
+
+    return None

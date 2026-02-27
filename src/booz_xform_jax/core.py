@@ -120,7 +120,7 @@ except ImportError as e:  # pragma: no cover
         "jaxlib before using this module."
     ) from e
 
-from .vmec import init_from_vmec, read_wout
+from .vmec import init_from_vmec, read_wout, read_wout_data
 from .io_utils import write_boozmn, read_boozmn
 from .jax_api import booz_xform_jax_impl, prepare_booz_xform_constants
 from .trig import _init_trig
@@ -395,6 +395,22 @@ class Booz_xform:
             If ``True``, also read radial profile arrays (φ', χ, p, …).
         """
         read_wout(self, filename, flux)
+
+    def read_wout_data(self, wout, flux: bool = False) -> None:
+        """
+        Populate the instance from an in-memory VMEC wout object.
+
+        This is a thin wrapper around
+        :func:`booz_xform_jax.vmec.read_wout_data`.
+
+        Parameters
+        ----------
+        wout :
+            A VMEC wout-like object (e.g. ``vmec_jax.WoutData``).
+        flux :
+            If ``True``, also read radial profile arrays (φ', χ, p, …) when available.
+        """
+        read_wout_data(self, wout, flux)
 
     def write_boozmn(self, filename: str) -> None:
         """

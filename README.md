@@ -313,10 +313,14 @@ Fast JAX-native examples live in `examples/`:
 
 - `example_li383_jax_api_fast.py`: JIT Boozer transform with no Python surface loop.
 - `example_li383_autodiff_opt.py`: toy autodiff optimization of Boozer |B| harmonics.
+- `example_vmec_jax_pipeline.py`: run vmec_jax in-memory and feed the result directly into booz_xform_jax.
 
 If you prefer a class-based API, `Booz_xform.run_jax()` provides the same
 JAX-native transform without the Python surface loop and returns a boozmn-like
 mapping.
+
+To initialize from an in-memory VMEC object (for example, `vmec_jax.WoutData`),
+use `Booz_xform.read_wout_data(wout)` and then call `run_jax()`.
 
 ### 5.4 Profiling
 
@@ -396,6 +400,7 @@ cd examples
 python example_surfplot_li383.py
 python example_symplot_li383.py
 python example_wireplot_li383.py
+python example_vmec_jax_pipeline.py
 ```
 
 Each script is self-contained and heavily commented to illustrate best practices.
