@@ -10,8 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
 
-import numpy as np
-
 import jax
 import jax.numpy as jnp
 
@@ -55,7 +53,7 @@ class BoozXformGrids:
         return cls(theta_grid=theta_grid, zeta_grid=zeta_grid, xm_b=xm_b, xn_b=xn_b)
 
 
-def _prepare_mode_lists(mboz: int, nboz: int, nfp: int) -> Tuple[np.ndarray, np.ndarray]:
+def _prepare_mode_lists(mboz: int, nboz: int, nfp: int) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Prepare Boozer mode indices following the C++/Fortran convention."""
     m_list: list[int] = []
     n_list: list[int] = []
@@ -68,7 +66,7 @@ def _prepare_mode_lists(mboz: int, nboz: int, nfp: int) -> Tuple[np.ndarray, np.
             for n in range(-nboz, nboz + 1):
                 m_list.append(m)
                 n_list.append(n * nfp)
-    return np.asarray(m_list, dtype=int), np.asarray(n_list, dtype=int)
+    return jnp.asarray(m_list, dtype=jnp.int32), jnp.asarray(n_list, dtype=jnp.int32)
 
 
 def _prepare_grids(mboz: int, nboz: int, nfp: int, asym: bool) -> Tuple[int, int, int, jnp.ndarray, jnp.ndarray]:
@@ -105,15 +103,15 @@ def prepare_booz_xform_constants(
 
     This helper runs on the host and can be used before JIT compilation.
     """
-    xm_np = np.asarray(xm, dtype=int)
-    xn_np = np.asarray(xn, dtype=int)
-    xm_nyq_np = np.asarray(xm_nyq, dtype=int)
-    xn_nyq_np = np.asarray(xn_nyq, dtype=int)
+    xm_arr = jnp.asarray(xm, dtype=jnp.int32)
+    xn_arr = jnp.asarray(xn, dtype=jnp.int32)
+    xm_nyq_arr = jnp.asarray(xm_nyq, dtype=jnp.int32)
+    xn_nyq_arr = jnp.asarray(xn_nyq, dtype=jnp.int32)
 
-    mmax_non = int(np.max(np.abs(xm_np)))
-    nmax_non = int(np.max(np.abs(xn_np // nfp)))
-    mmax_nyq = int(np.max(np.abs(xm_nyq_np)))
-    nmax_nyq = int(np.max(np.abs(xn_nyq_np // nfp)))
+    mmax_non = int(jnp.max(jnp.abs(xm_arr)))
+    nmax_non = int(jnp.max(jnp.abs(xn_arr // nfp)))
+    mmax_nyq = int(jnp.max(jnp.abs(xm_nyq_arr)))
+    nmax_nyq = int(jnp.max(jnp.abs(xn_nyq_arr // nfp)))
 
     ntheta, nzeta, nu2_b, theta_grid, zeta_grid = _prepare_grids(mboz, nboz, nfp, asym)
     xm_b, xn_b = _prepare_mode_lists(mboz, nboz, nfp)
