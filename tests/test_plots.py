@@ -41,17 +41,18 @@ class PlotTest(unittest.TestCase):
                     b.compute_surfs = [2, 15]
                     b.run()
                 # Try different options for each plot type
-                bx.surfplot(b)
-                bx.surfplot(b, js=1, fill=False, cmap=plt.cm.jet)
-                bx.symplot(b)
-                bx.symplot(b, marker='.', sqrts=True, log=False)
-                bx.modeplot(b)
+                bx.surfplot(b, show=False)
+                bx.surfplot(b, js=1, fill=False, cmap=plt.cm.jet, show=False)
+                bx.symplot(b, show=False)
+                bx.symplot(b, marker='.', sqrts=True, log=False, show=False)
+                bx.modeplot(b, show=False)
                 bx.modeplot(b, marker='.', sqrts=True, log=False,
-                            legend_args={'fontsize': 6})
+                            legend_args={'fontsize': 6}, show=False)
                 # wireplot returns a figure; we call it to ensure no error
-                fig = bx.wireplot(b)
+                fig = bx.wireplot(b, show=False)
                 # It is safe to close the figure since we do not display it
                 plt.close(fig)
+                plt.close("all")
 
 
 if __name__ == '__main__':
