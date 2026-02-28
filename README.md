@@ -52,6 +52,7 @@ This repository is not a fork of the C++ implementation but a **from-scratch re-
   - All heavy computations use `jax.numpy` and vectorised operations.
   - Minimal Python loops; expensive Fourier sums are expressed as batched `einsum` / matmul-style contractions.
   - Designed so that the main transform can be wrapped in `jax.jit` or `jax.vmap` by the *user*, depending on their workflow.
+  - Optional streamed Fourier mode avoids large `N_grid × N_mode` temporaries for memory-constrained runs.
 
 - **Close correspondence to C++ BOOZ\_XFORM**
   - The implementation follows the theory and algorithm described in:
@@ -206,7 +207,27 @@ After `run()`, the object `bx` contains:
 - `bx.gmnc_b, bx.gmns_b`: Boozer Jacobian harmonics
 - `bx.Boozer_I, bx.Boozer_G`: Boozer I and G profiles on the selected surfaces
 
-### 5.2 Quick-look plots
+### 5.2 Performance tuning
+
+The JAX API exposes a memory-friendly streamed Fourier mode for the Boozer
+spectral reconstruction. Set one of the following environment variables:
+
+- `BOOZ_XFORM_JAX_FOURIER_MODE=streamed`  
+  Avoids large `N_grid × N_mode` temporaries by looping over Boozer modes.
+  This reduces memory usage at the cost of extra compute.
+
+- `BOOZ_XFORM_JAX_FOURIER_MODE=vectorized` (default)  
+  Fastest path, but uses broadcast temporaries that scale with
+  `N_grid × N_mode`.
+
+For experimental memory reduction, you can also enable single-precision
+trigonometric tables while keeping 64-bit accumulation:
+
+- `BOOZ_XFORM_JAX_TRIG_F32=1`  
+  Uses `float32` for trig tables and promotes to `float64` for accumulation.
+  This is optional and should be validated against your reference cases.
+
+### 5.3 Quick-look plots
 
 The `booz_xform_jax.plots` module reproduces some of the classic BOOZ\_XFORM plots.
 
@@ -232,7 +253,7 @@ plots.modeplot(bx, nmodes=10)
 plots.wireplot(bx, js=-1)
 ```
 
-### 5.2 JAX-native functional API (end-to-end differentiation)
+### 5.4 JAX-native functional API (end-to-end differentiation)
 
 For JIT-native workflows, use the functional API in
 `booz_xform_jax.jax_api`. This avoids Python loops over surfaces and

@@ -90,3 +90,83 @@ def test_run_jax_matches_run():
         rtol=5e-6,
         atol=1e-8,
     )
+
+
+def test_streamed_fourier_matches_vectorized():
+    b = Booz_xform()
+    b.read_wout(os.path.join(TEST_DIR, "wout_li383_1.4m.nc"))
+    b.mboz = 4
+    b.nboz = 4
+    b.compute_surfs = [0]
+    b.run()
+
+    rmnc = jnp.asarray(np.asarray(b.rmnc).T)
+    zmns = jnp.asarray(np.asarray(b.zmns).T)
+    lmns = jnp.asarray(np.asarray(b.lmns).T)
+    bmnc = jnp.asarray(np.asarray(b.bmnc).T)
+    bsubumnc = jnp.asarray(np.asarray(b.bsubumnc).T)
+    bsubvmnc = jnp.asarray(np.asarray(b.bsubvmnc).T)
+    iota = jnp.asarray(np.asarray(b.iota))
+
+    # Vectorized (default)
+    if "BOOZ_XFORM_JAX_FOURIER_MODE" in os.environ:
+        os.environ.pop("BOOZ_XFORM_JAX_FOURIER_MODE")
+    out_vec = booz_xform_jax(
+        rmnc=rmnc,
+        zmns=zmns,
+        lmns=lmns,
+        bmnc=bmnc,
+        bsubumnc=bsubumnc,
+        bsubvmnc=bsubvmnc,
+        iota=iota,
+        xm=b.xm,
+        xn=b.xn,
+        xm_nyq=b.xm_nyq,
+        xn_nyq=b.xn_nyq,
+        nfp=b.nfp,
+        mboz=b.mboz,
+        nboz=b.nboz,
+        asym=bool(b.asym),
+        surface_indices=[0],
+    )
+
+    # Streamed
+    os.environ["BOOZ_XFORM_JAX_FOURIER_MODE"] = "streamed"
+    out_stream = booz_xform_jax(
+        rmnc=rmnc,
+        zmns=zmns,
+        lmns=lmns,
+        bmnc=bmnc,
+        bsubumnc=bsubumnc,
+        bsubvmnc=bsubvmnc,
+        iota=iota,
+        xm=b.xm,
+        xn=b.xn,
+        xm_nyq=b.xm_nyq,
+        xn_nyq=b.xn_nyq,
+        nfp=b.nfp,
+        mboz=b.mboz,
+        nboz=b.nboz,
+        asym=bool(b.asym),
+        surface_indices=[0],
+    )
+    os.environ.pop("BOOZ_XFORM_JAX_FOURIER_MODE", None)
+
+    np.testing.assert_allclose(
+        np.asarray(out_vec["bmnc_b"]),
+        np.asarray(out_stream["bmnc_b"]),
+        rtol=5e-6,
+        atol=1e-8,
+    )
+    np.testing.assert_allclose(
+        np.asarray(out_vec["rmnc_b"]),
+        np.asarray(out_stream["rmnc_b"]),
+        rtol=5e-6,
+        atol=1e-8,
+    )
+    np.testing.assert_allclose(
+        np.asarray(out_vec["zmns_b"]),
+        np.asarray(out_stream["zmns_b"]),
+        rtol=5e-6,
+        atol=1e-8,
+    )

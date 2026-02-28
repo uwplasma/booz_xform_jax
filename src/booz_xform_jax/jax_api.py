@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
+import os
 
 import jax
 import jax.numpy as jnp
@@ -167,6 +168,8 @@ def _surface_transform(
     bmns: Optional[jnp.ndarray] = None,
     bsubumns: Optional[jnp.ndarray] = None,
     bsubvmns: Optional[jnp.ndarray] = None,
+    fourier_mode: str = "vectorized",
+    trig_f32: bool = False,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Compute Boozer spectra for a single surface."""
     nfp = constants.nfp
@@ -228,6 +231,11 @@ def _surface_transform(
     cosm_b, sinm_b, cosn_b, sinn_b = _init_trig(
         theta_B, zeta_B, constants.mboz, constants.nboz, nfp
     )
+    if trig_f32:
+        cosm_b = cosm_b.astype(jnp.float32)
+        sinm_b = sinm_b.astype(jnp.float32)
+        cosn_b = cosn_b.astype(jnp.float32)
+        sinn_b = sinn_b.astype(jnp.float32)
 
     if not constants.asym:
         cosm_b = cosm_b.at[idx_theta0, :].set(cosm_b[idx_theta0, :] * 0.5)
@@ -237,14 +245,6 @@ def _surface_transform(
 
     boozer_jac = GI / (bmod * bmod)
 
-    cosm_b_m = jnp.take(cosm_b, m_b, axis=1)
-    sinm_b_m = jnp.take(sinm_b, m_b, axis=1)
-    cosn_b_n = jnp.take(cosn_b, abs_n_b, axis=1)
-    sinn_b_n = jnp.take(sinn_b, abs_n_b, axis=1)
-
-    tcos_modes = cosm_b_m * cosn_b_n + sinm_b_m * sinn_b_n * sign_b
-    tsin_modes = sinm_b_m * cosn_b_n - cosm_b_m * sinn_b_n * sign_b
-
     if constants.asym:
         fourier_factor0 = 2.0 / (constants.ntheta * constants.nzeta)
     else:
@@ -253,15 +253,66 @@ def _surface_transform(
     fourier_factor = jnp.ones((m_b.shape[0],), dtype=jnp.float64) * fourier_factor0
     fourier_factor = fourier_factor.at[0].set(fourier_factor0 * 0.5)
 
-    weight = dB_dvmec[:, None] * fourier_factor[None, :]
-    tcos_w = tcos_modes * weight
-    tsin_w = tsin_modes * weight
+    if fourier_mode == "streamed":
+        base_b = bmod * dB_dvmec
+        base_r = r * dB_dvmec
+        base_z = z * dB_dvmec
+        base_nu = nu * dB_dvmec
+        base_g = boozer_jac * dB_dvmec
 
-    bmnc_b = jnp.einsum("ij,i->j", tcos_w, bmod)
-    rmnc_b = jnp.einsum("ij,i->j", tcos_w, r)
-    zmns_b = jnp.einsum("ij,i->j", tsin_w, z)
-    numns_b = jnp.einsum("ij,i->j", tsin_w, nu)
-    gmnc_b = jnp.einsum("ij,i->j", tcos_w, boozer_jac)
+        m_b_f = m_b
+        abs_n_b_f = abs_n_b
+        sign_b_f = jnp.reshape(sign_b, (-1,))
+
+        def init_out():
+            zeros = jnp.zeros((m_b_f.shape[0],), dtype=base_b.dtype)
+            return zeros, zeros, zeros, zeros, zeros
+
+        def body(k, state):
+            bmnc_b, rmnc_b, zmns_b, numns_b, gmnc_b = state
+            m_idx = m_b_f[k]
+            n_idx = abs_n_b_f[k]
+            sign = sign_b_f[k]
+
+            cosm = jax.lax.dynamic_index_in_dim(cosm_b, m_idx, axis=1, keepdims=False)
+            sinm = jax.lax.dynamic_index_in_dim(sinm_b, m_idx, axis=1, keepdims=False)
+            cosn = jax.lax.dynamic_index_in_dim(cosn_b, n_idx, axis=1, keepdims=False)
+            sinn = jax.lax.dynamic_index_in_dim(sinn_b, n_idx, axis=1, keepdims=False)
+
+            tcos = cosm * cosn + sinm * sinn * sign
+            tsin = sinm * cosn - cosm * sinn * sign
+            ff = fourier_factor[k]
+
+            bmnc_b = bmnc_b.at[k].set(ff * jnp.sum(tcos * base_b))
+            rmnc_b = rmnc_b.at[k].set(ff * jnp.sum(tcos * base_r))
+            zmns_b = zmns_b.at[k].set(ff * jnp.sum(tsin * base_z))
+            numns_b = numns_b.at[k].set(ff * jnp.sum(tsin * base_nu))
+            gmnc_b = gmnc_b.at[k].set(ff * jnp.sum(tcos * base_g))
+            return bmnc_b, rmnc_b, zmns_b, numns_b, gmnc_b
+
+        bmnc_b, rmnc_b, zmns_b, numns_b, gmnc_b = jax.lax.fori_loop(
+            0, m_b_f.shape[0], body, init_out()
+        )
+    else:
+        cosm_b_m = jnp.take(cosm_b, m_b, axis=1)
+        sinm_b_m = jnp.take(sinm_b, m_b, axis=1)
+        cosn_b_n = jnp.take(cosn_b, abs_n_b, axis=1)
+        sinn_b_n = jnp.take(sinn_b, abs_n_b, axis=1)
+
+        tcos_modes = cosm_b_m * cosn_b_n + sinm_b_m * sinn_b_n * sign_b
+        tsin_modes = sinm_b_m * cosn_b_n - cosm_b_m * sinn_b_n * sign_b
+
+        base_b = bmod * dB_dvmec
+        base_r = r * dB_dvmec
+        base_z = z * dB_dvmec
+        base_nu = nu * dB_dvmec
+        base_g = boozer_jac * dB_dvmec
+
+        bmnc_b = fourier_factor * jnp.einsum("ij,i->j", tcos_modes, base_b)
+        rmnc_b = fourier_factor * jnp.einsum("ij,i->j", tcos_modes, base_r)
+        zmns_b = fourier_factor * jnp.einsum("ij,i->j", tsin_modes, base_z)
+        numns_b = fourier_factor * jnp.einsum("ij,i->j", tsin_modes, base_nu)
+        gmnc_b = fourier_factor * jnp.einsum("ij,i->j", tcos_modes, base_g)
 
     return bmnc_b, rmnc_b, zmns_b, numns_b, gmnc_b, Boozer_I, Boozer_G
 
@@ -312,6 +363,11 @@ def booz_xform_jax_impl(
     xm_nyq_j = jnp.asarray(xm_nyq, dtype=jnp.int32)
     xn_nyq_j = jnp.asarray(xn_nyq, dtype=jnp.int32)
 
+    fourier_mode = os.getenv("BOOZ_XFORM_JAX_FOURIER_MODE", "vectorized").strip().lower()
+    if fourier_mode not in {"vectorized", "streamed"}:
+        raise ValueError(f"Unsupported BOOZ_XFORM_JAX_FOURIER_MODE '{fourier_mode}'")
+    trig_f32 = os.getenv("BOOZ_XFORM_JAX_TRIG_F32", "0").strip().lower() in {"1", "true", "yes", "on"}
+
     # Precompute trig tables and mode combinations once for all surfaces.
     cosm, sinm, cosn, sinn = _init_trig(
         grids.theta_grid, grids.zeta_grid, constants.mmax_non, constants.nmax_non, constants.nfp
@@ -319,6 +375,15 @@ def booz_xform_jax_impl(
     cosm_nyq, sinm_nyq, cosn_nyq, sinn_nyq = _init_trig(
         grids.theta_grid, grids.zeta_grid, constants.mmax_nyq, constants.nmax_nyq, constants.nfp
     )
+    if trig_f32:
+        cosm = cosm.astype(jnp.float32)
+        sinm = sinm.astype(jnp.float32)
+        cosn = cosn.astype(jnp.float32)
+        sinn = sinn.astype(jnp.float32)
+        cosm_nyq = cosm_nyq.astype(jnp.float32)
+        sinm_nyq = sinm_nyq.astype(jnp.float32)
+        cosn_nyq = cosn_nyq.astype(jnp.float32)
+        sinn_nyq = sinn_nyq.astype(jnp.float32)
 
     cosm_m_non = jnp.take(cosm, xm_non_j, axis=1)
     sinm_m_non = jnp.take(sinm, xm_non_j, axis=1)
@@ -380,6 +445,8 @@ def booz_xform_jax_impl(
             bmns=_bmns,
             bsubumns=_bsubumns,
             bsubvmns=_bsubvmns,
+            fourier_mode=fourier_mode,
+            trig_f32=trig_f32,
         )
 
     vmap_fn = jax.vmap(_surf)
