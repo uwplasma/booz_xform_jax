@@ -50,6 +50,9 @@ def test_jax_api_matches_reference_small():
         surface_indices=[0],
     )
 
+    assert np.allclose(np.asarray(out["jlist"]), np.array([1]))
+    assert int(np.asarray(out["ns_b"])) == rmnc.shape[0]
+
     # Compare a few spectral coefficients.
     np.testing.assert_allclose(
         np.asarray(out["bmnc_b"])[0],

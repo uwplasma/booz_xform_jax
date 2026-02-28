@@ -293,6 +293,7 @@ def booz_xform_jax_impl(
     All inputs must be JAX arrays with surface dimension first, i.e. shape
     (ns, mn_non) for non-Nyquist arrays and (ns, mn_nyq) for Nyquist arrays.
     """
+    ns_b_full = int(rmnc.shape[0])
     if surface_indices is not None:
         rmnc = jnp.take(rmnc, surface_indices, axis=0)
         zmns = jnp.take(zmns, surface_indices, axis=0)
@@ -403,10 +404,14 @@ def booz_xform_jax_impl(
     )
 
     ns_b = bmnc_b.shape[0]
-    jlist = jnp.arange(1, ns_b + 1)
+    if surface_indices is None:
+        jlist = jnp.arange(1, ns_b + 1)
+    else:
+        jlist = surface_indices + 1
 
     return {
         "nfp_b": jnp.asarray(constants.nfp),
+        "ns_b": jnp.asarray(ns_b_full),
         "ixm_b": jnp.asarray(grids.xm_b),
         "ixn_b": jnp.asarray(grids.xn_b),
         "iota_b": iota,
