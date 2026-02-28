@@ -225,7 +225,7 @@ trigonometric tables while keeping 64-bit accumulation:
 
 - `BOOZ_XFORM_JAX_TRIG_F32=1`  
   Uses `float32` for trig tables and promotes to `float64` for accumulation.
-  This is optional and should be validated against your reference cases.
+  This is experimental and may not match reference outputs; validate before use.
 
 ### 5.3 Quick-look plots
 
