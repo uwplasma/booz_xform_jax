@@ -141,6 +141,26 @@ def prepare_booz_xform_constants(
     return constants, grids
 
 
+def prepare_booz_xform_constants_from_inputs(
+    *,
+    inputs,
+    mboz: int,
+    nboz: int,
+    asym: bool,
+) -> tuple[BoozXformConstants, BoozXformGrids]:
+    """Convenience wrapper using a VMEC -> Boozer input bundle."""
+    return prepare_booz_xform_constants(
+        nfp=int(jnp.asarray(inputs.nfp)),
+        mboz=int(mboz),
+        nboz=int(nboz),
+        asym=bool(asym),
+        xm=jnp.asarray(inputs.xm),
+        xn=jnp.asarray(inputs.xn),
+        xm_nyq=jnp.asarray(inputs.xm_nyq),
+        xn_nyq=jnp.asarray(inputs.xn_nyq),
+    )
+
+
 def _surface_transform(
     rmnc: jnp.ndarray,
     zmns: jnp.ndarray,
@@ -488,6 +508,39 @@ def booz_xform_jax_impl(
         "bmnc_b": bmnc_b,
         "jlist": jlist,
     }
+
+
+def booz_xform_from_inputs(
+    *,
+    inputs,
+    constants: BoozXformConstants,
+    grids: BoozXformGrids,
+    surface_indices: Optional[jnp.ndarray] = None,
+    jit: bool = True,
+) -> dict:
+    """Run the JAX Boozer transform using a VMEC -> Boozer input bundle."""
+    booz_fn = booz_xform_jax_impl
+    if jit:
+        booz_fn = jax.jit(booz_xform_jax_impl, static_argnames=("constants",))
+    return booz_fn(
+        rmnc=inputs.rmnc,
+        zmns=inputs.zmns,
+        lmns=inputs.lmns,
+        bmnc=inputs.bmnc,
+        bsubumnc=inputs.bsubumnc,
+        bsubvmnc=inputs.bsubvmnc,
+        iota=inputs.iota,
+        xm=inputs.xm,
+        xn=inputs.xn,
+        xm_nyq=inputs.xm_nyq,
+        xn_nyq=inputs.xn_nyq,
+        constants=constants,
+        grids=grids,
+        bmns=inputs.bmns,
+        bsubumns=inputs.bsubumns,
+        bsubvmns=inputs.bsubvmns,
+        surface_indices=surface_indices,
+    )
 
 
 def booz_xform_jax(

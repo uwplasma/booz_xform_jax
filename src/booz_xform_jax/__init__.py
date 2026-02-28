@@ -18,7 +18,9 @@ from .jax_api import (
     BoozXformGrids,
     booz_xform_jax,
     booz_xform_jax_impl,
+    booz_xform_from_inputs,
     prepare_booz_xform_constants,
+    prepare_booz_xform_constants_from_inputs,
 )
 
 # Version is defined here for convenience.  It must match the value in
@@ -35,7 +37,9 @@ __all__ = [
     "BoozXformConstants",
     "BoozXformGrids",
     "prepare_booz_xform_constants",
+    "prepare_booz_xform_constants_from_inputs",
     "booz_xform_jax",
     "booz_xform_jax_impl",
+    "booz_xform_from_inputs",
     "__version__",
 ]
