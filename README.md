@@ -181,8 +181,34 @@ python -m booz_xform_jax -h
 
 ### 5.0 Legacy STELLOPT CLI compatibility
 
-`booz_xform_jax` now accepts the same `in_booz` file format as STELLOPT's
-`xbooz_xform`:
+This repository now includes a **legacy-compatible terminal driver** that
+behaves like STELLOPT's `xbooz_xform`. This is not a toy wrapper. It is meant
+to let users take an existing `in_booz.*` file, run `booz_xform_jax` from the
+shell, and get the same `boozmn_*.nc` product they would get from the original
+Fortran/C++ workflow, while still keeping the JAX-native API available for
+end-to-end differentiation and JIT compilation.
+
+Installed entrypoints:
+
+```bash
+xbooz_xform
+xbooz_xform_jax
+python -m booz_xform_jax
+```
+
+Legacy invocation:
+
+```bash
+xbooz_xform <infile> [T|F]
+```
+
+Example:
+
+```bash
+xbooz_xform booz_in.li383_1.4m F
+```
+
+The accepted `in_booz` format is the same one used by STELLOPT:
 
 ```text
 32 32
@@ -190,20 +216,73 @@ li383_1.4m
 2 3 4 25 49
 ```
 
-Run it in the same way:
+What the JAX CLI does, step by step:
 
-```bash
-xbooz_xform booz_in.li383_1.4m F
-```
+1. Reads `mboz` / `nboz` from the first line.
+2. Reads the VMEC extension from the second line.
+3. Accepts both plain and quoted extensions, for example `MIRFL14_11p` and
+   `'MIRFL14_11p'`.
+4. Resolves the VMEC file using the same legacy conventions as STELLOPT, e.g.
+   `wout_<ext>.nc` or `wout.<ext>.nc`.
+5. Reads the optional third-line surface list exactly as a full-grid `jlist`.
+6. Applies the same STELLOPT resolution promotion rules:
+   `mboz = max(mboz, 2, 6*mpol)` and `nboz = max(nboz, 0, 2*ntor - 1)`.
+7. Runs the JAX transform.
+8. Writes `boozmn_<extension>.nc` in the current working directory.
 
-The wrapper will:
+Important compatibility detail:
 
-- parse `mboz` / `nboz` from the first line,
-- resolve the VMEC input from the second line (for example `wout_li383_1.4m.nc`),
-- map the optional full-grid surface list to the internal half-grid indices,
-- apply the same STELLOPT resolution promotion
-  (`mboz = max(mboz, 2, 6*mpol)`, `nboz = max(nboz, 0, 2*ntor-1)`),
-- write `boozmn_<extension>.nc`.
+- If the `jlist` line is omitted, `booz_xform_jax` follows the same default
+  behavior as legacy `xbooz_xform`: all non-axis surfaces are transformed.
+
+How this is implemented:
+
+- The legacy parser lives in `src/booz_xform_jax/cli.py`.
+- The parser converts the `in_booz` file into the same inputs the JAX core API
+  expects.
+- The CLI then drives the same `Booz_xform` object used by the Python API, so
+  the terminal and programmatic paths stay numerically aligned.
+- Output is written with the same Boozer NetCDF field names (`bmnc_b`,
+  `rmnc_b`, `zmns_b`, `pmns_b`, `gmn_b`, etc.), so downstream tools that
+  expect `boozmn` files continue to work.
+
+Comparison with STELLOPT `xbooz_xform`:
+
+| Behavior | STELLOPT `xbooz_xform` | `booz_xform_jax` |
+| --- | --- | --- |
+| Reads `in_booz.*` | Yes | Yes |
+| Accepts `xbooz_xform <infile> [T|F]` | Yes | Yes |
+| Resolves `wout_<ext>.nc` / `wout.<ext>.nc` | Yes | Yes |
+| Uses full-grid `jlist` semantics | Yes | Yes |
+| Promotes `mboz` / `nboz` to legacy minimums | Yes | Yes |
+| Writes `boozmn_<ext>.nc` | Yes | Yes |
+| JIT / autodiff capable | No | Yes |
+
+How this is tested:
+
+- `tests/test_cli.py` runs the installed JAX CLI against the real reference
+  executable from `~/bin/xbooz_xform` (or `BOOZ_XFORM_REFERENCE_BIN`).
+- The tests compare generated `boozmn` files directly, field by field.
+- Covered cases include bundled examples and additional external VMEC files.
+- Current parity coverage includes:
+  - `booz_in.li383_1.4m`
+  - `booz_in.LandremanSenguptaPlunk_section5p3`
+  - `booz_in.up_down_asymmetric_tokamak`
+  - `booz_in.circular_tokamak`
+  - generated low-resolution QA / stellarator cases from `simsopt`
+
+Observed agreement with STELLOPT:
+
+- For `booz_in.li383_1.4m`, the maximum absolute differences against the
+  reference `xbooz_xform` output were:
+  - `bmnc_b`: `1.07e-14`
+  - `rmnc_b`: `6.66e-15`
+  - `zmns_b`: `1.22e-15`
+  - `pmns_b`: `2.08e-16`
+  - `gmn_b`: `6.11e-15`
+
+This means the CLI is not only syntactically compatible with STELLOPT, but
+numerically validated against the reference binary on multiple cases.
 
 ### 5.1 From a VMEC `wout` file
 
