@@ -22,6 +22,7 @@ from .jax_api import (
     prepare_booz_xform_constants,
     prepare_booz_xform_constants_from_inputs,
 )
+from .cli import run_from_legacy_input
 
 # Version is defined here for convenience.  It must match the value in
 # pyproject.toml for consistency.  Updating the version in one place
@@ -41,5 +42,6 @@ __all__ = [
     "booz_xform_jax",
     "booz_xform_jax_impl",
     "booz_xform_from_inputs",
+    "run_from_legacy_input",
     "__version__",
 ]

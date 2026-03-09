@@ -167,9 +167,43 @@ You should now be able to:
 python -c "import booz_xform_jax; print(booz_xform_jax.__version__)"
 ```
 
+The package also installs legacy-compatible CLI entrypoints:
+
+```bash
+xbooz_xform -h
+xbooz_xform_jax -h
+python -m booz_xform_jax -h
+```
+
 ---
 
 ## 5. Basic usage
+
+### 5.0 Legacy STELLOPT CLI compatibility
+
+`booz_xform_jax` now accepts the same `in_booz` file format as STELLOPT's
+`xbooz_xform`:
+
+```text
+32 32
+li383_1.4m
+2 3 4 25 49
+```
+
+Run it in the same way:
+
+```bash
+xbooz_xform booz_in.li383_1.4m F
+```
+
+The wrapper will:
+
+- parse `mboz` / `nboz` from the first line,
+- resolve the VMEC input from the second line (for example `wout_li383_1.4m.nc`),
+- map the optional full-grid surface list to the internal half-grid indices,
+- apply the same STELLOPT resolution promotion
+  (`mboz = max(mboz, 2, 6*mpol)`, `nboz = max(nboz, 0, 2*ntor-1)`),
+- write `boozmn_<extension>.nc`.
 
 ### 5.1 From a VMEC `wout` file
 
