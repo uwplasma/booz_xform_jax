@@ -46,7 +46,7 @@ def _iter_existing(paths: list[Path]) -> Path | None:
 
 def _resolve_wout_path(file_or_extension: str, *, input_dir: Path) -> Path:
     """Resolve a VMEC wout file from a legacy extension string."""
-    raw = file_or_extension.strip()
+    raw = file_or_extension.strip().strip("\"'")
     roots = [input_dir, Path.cwd()]
 
     def _expand(candidate: str) -> list[Path]:
@@ -88,7 +88,7 @@ def _resolve_wout_path(file_or_extension: str, *, input_dir: Path) -> Path:
 
 def _normalize_output_extension(file_or_extension: str) -> str:
     """Convert a legacy extension or wout filename into the boozmn suffix."""
-    name = Path(file_or_extension.strip()).name
+    name = Path(file_or_extension.strip().strip("\"'")).name
     if name.endswith(".nc"):
         name = name[:-3]
     elif name.endswith(".txt"):
@@ -121,7 +121,7 @@ def _parse_input_file(path: Path) -> tuple[int, int, str, list[int] | None, bool
     except ValueError as exc:
         raise ValueError("Error reading input file in booz_xform") from exc
 
-    extension = nonempty[1]
+    extension = nonempty[1].strip().strip("\"'")
     remainder = "\n".join(nonempty[2:])
     surface_tokens = [int(token) for token in re.findall(r"-?\d+", remainder)]
     if not surface_tokens:
@@ -201,4 +201,3 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     return 0
-
