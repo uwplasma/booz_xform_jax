@@ -1,0 +1,50 @@
+[
+  {
+    "case_id": "circular_tokamak",
+    "reference_runtime_s": 3.1339462918695062,
+    "jax_runtime_s": 4.276520624989644,
+    "iota_rel_l2": 0.0,
+    "b00_rel_l2": 0.0,
+    "bmnc_rel_l2": 0.0
+  },
+  {
+    "case_id": "LandremanSenguptaPlunk_section5p3",
+    "reference_runtime_s": 8.455319250002503,
+    "jax_runtime_s": 2.504805166972801,
+    "iota_rel_l2": 0.0,
+    "b00_rel_l2": 0.0,
+    "bmnc_rel_l2": 0.0
+  },
+  {
+    "case_id": "up_down_asymmetric_tokamak",
+    "reference_runtime_s": 9.724993707844988,
+    "jax_runtime_s": 3.6588943749666214,
+    "iota_rel_l2": 0.0,
+    "b00_rel_l2": 0.0,
+    "bmnc_rel_l2": 0.0
+  },
+  {
+    "case_id": "li383_1.4m",
+    "reference_runtime_s": 4.653192583005875,
+    "jax_runtime_s": 4.056647416902706,
+    "iota_rel_l2": 0.0,
+    "b00_rel_l2": 0.0,
+    "bmnc_rel_l2": 0.0
+  },
+  {
+    "case_id": "ITERModel",
+    "reference_runtime_s": 3.166840499965474,
+    "jax_runtime_s": 3.5434423328842968,
+    "iota_rel_l2": 0.0,
+    "b00_rel_l2": 0.0,
+    "bmnc_rel_l2": 0.0
+  },
+  {
+    "case_id": "LandremanPaul2021_QA_lowres",
+    "reference_runtime_s": 2.167179709067568,
+    "jax_runtime_s": 4.147488832939416,
+    "iota_rel_l2": 0.0,
+    "b00_rel_l2": 0.0,
+    "bmnc_rel_l2": 0.0
+  }
+]

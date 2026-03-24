@@ -8,6 +8,43 @@ A high-performance, JAX-based reimplementation of the classic **BOOZ\_XFORM** co
 > - a **drop-in, differentiable analogue** of the C++/Fortran BOOZ\_XFORM used by `simsopt` and related tools;
 > - a **pedagogical reference implementation** showing how the Boozer transform can be expressed in modern array-based, differentiable form.
 
+## Showcase
+
+The figures below compare `booz_xform_jax` with the original C++ `xbooz_xform`
+on the same VMEC `wout` inputs. The radial/profile comparisons use
+`ITERModel` and `LandremanPaul2021_QA_lowres` when those VMEC reference files
+are available locally; the runtime panel includes those cases plus the bundled
+BOOZ\_XFORM regression cases.
+
+<p align="center">
+  <img src="README_assets/readme_runtime_compare.png" width="860" />
+</p>
+
+<table>
+  <tr>
+    <td><img src="README_assets/iter_profiles_compare.png" width="420" /></td>
+    <td><img src="README_assets/qa_profiles_compare.png" width="420" /></td>
+  </tr>
+  <tr>
+    <td align="center"><code>ITERModel</code> Boozer profiles (reference vs JAX)</td>
+    <td align="center"><code>LandremanPaul2021_QA_lowres</code> Boozer profiles (reference vs JAX)</td>
+  </tr>
+  <tr>
+    <td><img src="README_assets/iter_surface_compare.png" width="420" /></td>
+    <td><img src="README_assets/qa_surface_compare.png" width="420" /></td>
+  </tr>
+  <tr>
+    <td align="center"><code>ITERModel</code> outer-surface |B| in Boozer angles</td>
+    <td align="center"><code>LandremanPaul2021_QA_lowres</code> outer-surface |B| in Boozer angles</td>
+  </tr>
+</table>
+
+Reproduce these assets with:
+
+```bash
+python tools/readme_compare.py
+```
+
 ---
 
 ## 1. Background and motivation
