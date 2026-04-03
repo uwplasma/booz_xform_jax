@@ -32,6 +32,7 @@ Homepage = "https://github.com/hiddenSymmetries/booz_xform"
 Repository = "https://github.com/hiddenSymmetries/booz_xform"
 
 [project.scripts]
+booz_xform_jax = "booz_xform_jax.cli:main"
 xbooz_xform = "booz_xform_jax.cli:main"
 xbooz_xform_jax = "booz_xform_jax.cli:main"
 

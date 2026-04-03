@@ -143,7 +143,7 @@ def test_cli_help() -> None:
         env=_pythonpath_env(),
     )
     assert proc.returncode == 0
-    assert "xbooz_xform <infile> (T or F)" in proc.stdout
+    assert "<infile> (T or F)" in proc.stdout
 
 
 pytestmark = pytest.mark.skipif(
