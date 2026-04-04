@@ -746,8 +746,33 @@ class Booz_xform:
         else:
             bmns_b = rmns_b = zmnc_b = numnc_b = gmns_b = None
 
-        Boozer_I = _np.zeros(ns_b, dtype=float)
-        Boozer_G = _np.zeros(ns_b, dtype=float)
+        # Batch-extract Boozer I and G for all selected surfaces at once
+        # (avoids one device→host transfer per surface inside the loop).
+        _surfs_np = _np.asarray(self.compute_surfs, dtype=int)
+        Boozer_I = _np.asarray(self.bsubumnc[idx00, _surfs_np], dtype=float)
+        Boozer_G = _np.asarray(self.bsubvmnc[idx00, _surfs_np], dtype=float)
+
+        # ------------------------------------------------------------------
+        # Hoist Boozer-mode index arrays out of the surface loop.
+        # These depend only on xm_b / xn_b which are constant across surfaces.
+        # Computing them inside the loop triggers repeated device→host syncs.
+        # ------------------------------------------------------------------
+        _m_b_np_idx   = _np.asarray(xm_b_j, dtype=int)         # (mnboz,)
+        _abs_n_b_np   = _np.asarray(jnp.abs(xn_b_j // self.nfp), dtype=int)  # (mnboz,)
+        _sign_b_hoisted = jnp.where(xn_b_j < 0, -1.0, 1.0)[None, :]  # (1, mnboz)
+
+        # Fourier normalisation factor (constant: depends only on grid sizes)
+        _fourier_factor0 = (
+            2.0 / (self._ntheta * self._nzeta) if self.asym
+            else 2.0 / ((self._nu2_b - 1) * self._nzeta)
+        )
+        _fourier_factor = jnp.ones((mnboz,), dtype=jnp.float64) * _fourier_factor0
+        _fourier_factor = _fourier_factor.at[0].set(_fourier_factor0 * 0.5)
+
+        # NumPy copies for the verbose modbooz reconstruction
+        if _verbose:
+            _xm_b_np_f = _np.asarray(xm_b_j, dtype=float)
+            _xn_b_np_f = _np.asarray(xn_b_j, dtype=float)
 
         # Convenience indices for symmetric θ integration (θ=0 and θ=π rows).
         idx_theta0 = jnp.arange(0, self._nzeta)
@@ -772,10 +797,8 @@ class Booz_xform:
 
             # ------------------------------------------------------------------
             # 1) Boozer I and G from (m=0, n=0) Nyquist mode
+            # (already batch-extracted before the loop; just read host array)
             # ------------------------------------------------------------------
-            Boozer_I[js_b] = float(self.bsubumnc[idx00, js])
-            Boozer_G[js_b] = float(self.bsubvmnc[idx00, js])
-
             Boozer_I_js = Boozer_I[js_b]
             Boozer_G_js = Boozer_G[js_b]
 
@@ -953,37 +976,18 @@ class Booz_xform:
             # ------------------------------------------------------------------
             # 7) Final Fourier integrals (all Boozer modes at once)
             # ------------------------------------------------------------------
-            m_b = xm_b_j                              # (mnboz,)
-            n_b = xn_b_j                              # (mnboz,)
-            abs_n_b = jnp.abs(n_b // self.nfp)
-            abs_n_b_idx = _np.asarray(abs_n_b, dtype=int)
-            sign_b = jnp.where(n_b < 0, -1.0, 1.0)[None, :]  # (1, mnboz)
-
-            # Gather cos/sin factors for each (m_b, n_b)
-            cosm_b_m = cosm_b[:, _np.asarray(m_b, dtype=int)]      # (N, mnboz)
-            sinm_b_m = sinm_b[:, _np.asarray(m_b, dtype=int)]
-            cosn_b_n = cosn_b[:, abs_n_b_idx]
-            sinn_b_n = sinn_b[:, abs_n_b_idx]
+            # Use hoisted index arrays (no device→host syncs here)
+            cosm_b_m = cosm_b[:, _m_b_np_idx]      # (N, mnboz)
+            sinm_b_m = sinm_b[:, _m_b_np_idx]
+            cosn_b_n = cosn_b[:, _abs_n_b_np]
+            sinn_b_n = sinn_b[:, _abs_n_b_np]
 
             # tcos / tsin as in the original code:
-            tcos_modes = cosm_b_m * cosn_b_n + sinm_b_m * sinn_b_n * sign_b
-            tsin_modes = sinm_b_m * cosn_b_n - cosm_b_m * sinn_b_n * sign_b
+            tcos_modes = cosm_b_m * cosn_b_n + sinm_b_m * sinn_b_n * _sign_b_hoisted
+            tsin_modes = sinm_b_m * cosn_b_n - cosm_b_m * sinn_b_n * _sign_b_hoisted
 
-            # Fourier normalisation factor
-            if self.asym:
-                # Asymmetric: integrate over full θ range
-                fourier_factor0 = 2.0 / (self._ntheta * self._nzeta)
-            else:
-                # Symmetric: integrate over [0, π]; only nu2_b-1 rows are
-                # interior; θ=0 and θ=π are half-weight rows.
-                fourier_factor0 = 2.0 / ((self._nu2_b - 1) * self._nzeta)
-
-            fourier_factor = jnp.ones((mnboz,), dtype=jnp.float64) * fourier_factor0
-            # Extra 1/2 for the m=0, n=0 mode (jmn=0).
-            fourier_factor = fourier_factor.at[0].set(fourier_factor0 * 0.5)
-
-            # Weight including dB/d(vmec)
-            weight = dB_dvmec[:, None] * fourier_factor[None, :]  # (N, mnboz)
+            # Weight including dB/d(vmec)  (fourier_factor hoisted above)
+            weight = dB_dvmec[:, None] * _fourier_factor[None, :]  # (N, mnboz)
             tcos_w = tcos_modes * weight
             tsin_w = tsin_modes * weight
 
@@ -1026,32 +1030,33 @@ class Booz_xform:
                 # jrad is the 1-based full-grid index (Fortran convention)
                 jrad = js + 2
 
+                # Vectorised modbooz: u_b/v_b are (4,), _xm_b_np_f/_xn_b_np_f (mnboz,)
+                # -> angles (4, mnboz), then sum over modes
+                u_b_arr = _np.array(u_b)   # (4,)
+                v_b_arr = _np.array(v_b)   # (4,)
+                sgn_arr = _np.where(_xn_b_np_f >= 0, 1.0, -1.0)  # (mnboz,)
+                n_abs_arr = _np.abs(_xn_b_np_f) / self.nfp        # (mnboz,)
+
+                cosm_4 = _np.cos(_xm_b_np_f[None, :] * u_b_arr[:, None])   # (4, mnboz)
+                sinm_4 = _np.sin(_xm_b_np_f[None, :] * u_b_arr[:, None])
+                cosn_4 = _np.cos(n_abs_arr[None, :] * v_b_arr[:, None] * self.nfp)
+                sinn_4 = _np.sin(n_abs_arr[None, :] * v_b_arr[:, None] * self.nfp)
+
+                cost_4 = cosm_4 * cosn_4 + sinm_4 * sinn_4 * sgn_arr[None, :]  # (4, mnboz)
                 bmnc_np = _np.asarray(bmnc_b_js)
-                bmns_np = _np.asarray(bmns_b_js) if self.asym else None
-                xm_b_np = _np.asarray(xm_b_j)
-                xn_b_np = _np.asarray(xn_b_j)
+                bmodb_arr = cost_4 @ bmnc_np  # (4,)
 
-                bmodb = [0.0] * 4
-                for k in range(4):
-                    for mn in range(mnboz):
-                        m = int(xm_b_np[mn])
-                        n_raw = xn_b_np[mn]
-                        n_abs = int(abs(n_raw)) // self.nfp
-                        sgn = 1.0 if n_raw >= 0 else -1.0
-                        cosm_val = _np.cos(m * u_b[k])
-                        sinm_val = _np.sin(m * u_b[k])
-                        cosn_val = _np.cos(n_abs * v_b[k] * self.nfp)
-                        sinn_val = _np.sin(n_abs * v_b[k] * self.nfp)
-                        cost = cosm_val * cosn_val + sinm_val * sinn_val * sgn
-                        bmodb[k] += float(bmnc_np[mn]) * cost
-                        if self.asym and bmns_np is not None:
-                            sint = sinm_val * cosn_val - cosm_val * sinn_val * sgn
-                            bmodb[k] += float(bmns_np[mn]) * sint
+                if self.asym:
+                    sint_4 = sinm_4 * cosn_4 - cosm_4 * sinn_4 * sgn_arr[None, :]
+                    bmods_arr = sint_4 @ _np.asarray(bmns_b_js)
+                    bmodb_arr = bmodb_arr + bmods_arr
 
-                err = [
-                    abs(bmodb[k] - bmodv[k]) / max(abs(bmodb[k]), abs(bmodv[k]), 1e-30)
-                    for k in range(4)
-                ]
+                bmodv_arr = _np.array(bmodv)
+                err_arr = _np.abs(bmodb_arr - bmodv_arr) / _np.maximum(
+                    _np.abs(bmodb_arr), _np.maximum(_np.abs(bmodv_arr), 1e-30)
+                )
+                bmodb = bmodb_arr.tolist()
+                err   = err_arr.tolist()
 
                 print(
                     f"  0  {bmodv[0]:11.3E}{bmodb[0]:11.3E}{err[0]:11.3E}"
