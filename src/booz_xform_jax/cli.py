@@ -22,12 +22,12 @@ from .core import Booz_xform
 
 
 HELP_TEXT = """ ENTER INPUT FILE NAME ON COMMAND LINE
- For example: xbooz_xform in_booz.ext
+ For example: booz_xform_jax in_booz.ext
 
  WHERE in_booz.ext is the input file
 
  Optional command line argument
- xbooz_xform <infile> (T or F)
+ booz_xform_jax <infile> (T or F)
 
  where F suppresses output to the screen
 """
@@ -149,7 +149,7 @@ def run_from_legacy_input(input_file: str | Path, *, screen_output: bool = True)
 
     wout_path = _resolve_wout_path(extension, input_dir=input_path.parent.resolve())
     output_extension = _normalize_output_extension(extension)
-    output_path = input_path.parent / f"boozmn_{output_extension}.nc"
+    output_path = Path.cwd() / f"boozmn_{output_extension}.nc"
 
     booz = Booz_xform(verbose=1 if screen_output else 0)
     booz.read_wout(str(wout_path), flux=True)
@@ -175,8 +175,8 @@ def main(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
 
     if not argv:
-        print("Invalid command line in calling xbooz_xform")
-        print("Type xbooz_xform -h to get more information")
+        print("Invalid command line in calling booz_xform_jax")
+        print("Type booz_xform_jax -h to get more information")
         return 1
 
     if argv[0] in {"-h", "/h", "--help"}:
@@ -184,8 +184,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if len(argv) > 2:
-        print("Invalid command line in calling xbooz_xform")
-        print("Type xbooz_xform -h to get more information")
+        print("Invalid command line in calling booz_xform_jax")
+        print("Type booz_xform_jax -h to get more information")
         return 1
 
     screen_output = True

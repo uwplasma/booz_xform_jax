@@ -577,8 +577,7 @@ class Booz_xform:
         _verbose = bool(self.verbose)
 
         if _verbose:
-            print("[booz_xform_jax] Starting Boozer transform")
-            print(f"[booz_xform_jax] mboz={self.mboz}, nboz={self.nboz}")
+            pass  # Header printed after grid setup
 
         # Basic sanity checks: VMEC data must be initialised.
         if self.rmnc is None or self.bmnc is None:
@@ -623,12 +622,22 @@ class Booz_xform:
         self._setup_grids()
 
         if _verbose:
-            print("[booz_xform_jax] Grid resolution:")
             print(
-                f"    ntheta={self._ntheta}, nzeta={self._nzeta},"
-                f" total={self._n_theta_zeta}"
+                f"  0 <= mboz <= {int(self.mboz) - 1:4d}"
+                f"   {-int(self.nboz):4d} <= nboz <= {int(self.nboz):4d}"
             )
-            print(f"    nfp={self.nfp}, ns_b={len(self.compute_surfs)}")
+            print(f"  nu_boz = {self._ntheta:5d} nv_boz = {self._nzeta:5d}")
+            print()
+            print(
+                "             OUTBOARD (u=0)"
+                "              JS          INBOARD (u=pi)"
+            )
+            print("-" * 77)
+            print(
+                "  v     |B|vmec    |B|booz    Error"
+                "             |B|vmec    |B|booz    Error"
+            )
+            print()
 
         n_theta_zeta = self._n_theta_zeta
         theta_grid = self._theta_grid
@@ -746,16 +755,13 @@ class Booz_xform:
             (self._nu2_b - 1) * self._nzeta, self._nu2_b * self._nzeta
         )
 
-        if _verbose:
-            print(
-                "                   |        outboard (theta=0)      |"
-                "      inboard (theta=pi)      |"
-            )
-            print(
-                "thread js_b js zeta| |B|input  |B|Boozer    Error   |"
-                " |B|input  |B|Boozer    Error |"
-            )
-            print("------------------------------------------------------------------------------------")
+        # Fixed-point indices for Fortran-style accuracy check
+        # (u=0,v=0), (u=pi,v=0), (u=0,v=pi), (u=pi,v=pi)
+        nv2_b_idx = self._nzeta // 2  # 0-based index for v=pi
+        idx_00 = 0
+        idx_pi0 = (self._nu2_b - 1) * self._nzeta
+        idx_0pi = nv2_b_idx
+        idx_pipi = (self._nu2_b - 1) * self._nzeta + nv2_b_idx
 
         # ------------------------------------------------------------------
         # Loop over surfaces js_b (Python loop; heavy math is vectorised)
@@ -896,20 +902,26 @@ class Booz_xform:
             dB_dvmec = (1.0 + dlam_dth) * (1.0 + dnu_dze) + \
                 (this_iota - dlam_dze) * dnu_dth
 
-            # Optional diagnostics: check |B| consistency at outboard / inboard
+            # Store VMEC-space |B| at 4 fixed points for accuracy check later
             if _verbose:
-                B_in_ob = float(jnp.mean(bmod[idx_theta0]))
-                B_bz_ob = float(jnp.mean(bmod[idx_theta0] * dB_dvmec[idx_theta0]))
-                err_ob = B_bz_ob - B_in_ob
-
-                B_in_ib = float(jnp.mean(bmod[idx_thetapi]))
-                B_bz_ib = float(jnp.mean(bmod[idx_thetapi] * dB_dvmec[idx_thetapi]))
-                err_ib = B_bz_ib - B_in_ib
-
-                print(
-                    f"  {js_b:4d} {js:4d}    0   "
-                    f"{B_in_ob:10.6f} {B_bz_ob:10.6f} {err_ob:10.6f}   "
-                    f"{B_in_ib:10.6f} {B_bz_ib:10.6f} {err_ib:10.6f}"
+                bmodv = (
+                    float(bmod[idx_00]),     # (u=0, v=0)
+                    float(bmod[idx_pi0]),    # (u=pi, v=0)
+                    float(bmod[idx_0pi]),    # (u=0, v=pi)
+                    float(bmod[idx_pipi]),   # (u=pi, v=pi)
+                )
+                # Boozer angles at those 4 grid points
+                u_b = (
+                    float(theta_B[idx_00]),
+                    float(theta_B[idx_pi0]),
+                    float(theta_B[idx_0pi]),
+                    float(theta_B[idx_pipi]),
+                )
+                v_b = (
+                    float(zeta_B[idx_00]),
+                    float(zeta_B[idx_pi0]),
+                    float(zeta_B[idx_0pi]),
+                    float(zeta_B[idx_pipi]),
                 )
 
             # ------------------------------------------------------------------
@@ -1007,6 +1019,48 @@ class Booz_xform:
                 zmnc_b[:, js_b] = _np.asarray(zmnc_b_js)
                 numnc_b[:, js_b] = _np.asarray(numnc_b_js)
                 gmns_b[:, js_b] = _np.asarray(gmns_b_js)
+
+            # Fortran-style accuracy check: reconstruct |B| at 4 fixed
+            # Boozer-angle points and compare with VMEC real-space |B|.
+            if _verbose:
+                # jrad is the 1-based full-grid index (Fortran convention)
+                jrad = js + 2
+
+                bmnc_np = _np.asarray(bmnc_b_js)
+                bmns_np = _np.asarray(bmns_b_js) if self.asym else None
+                xm_b_np = _np.asarray(xm_b_j)
+                xn_b_np = _np.asarray(xn_b_j)
+
+                bmodb = [0.0] * 4
+                for k in range(4):
+                    for mn in range(mnboz):
+                        m = int(xm_b_np[mn])
+                        n_raw = xn_b_np[mn]
+                        n_abs = int(abs(n_raw)) // self.nfp
+                        sgn = 1.0 if n_raw >= 0 else -1.0
+                        cosm_val = _np.cos(m * u_b[k])
+                        sinm_val = _np.sin(m * u_b[k])
+                        cosn_val = _np.cos(n_abs * v_b[k] * self.nfp)
+                        sinn_val = _np.sin(n_abs * v_b[k] * self.nfp)
+                        cost = cosm_val * cosn_val + sinm_val * sinn_val * sgn
+                        bmodb[k] += float(bmnc_np[mn]) * cost
+                        if self.asym and bmns_np is not None:
+                            sint = sinm_val * cosn_val - cosm_val * sinn_val * sgn
+                            bmodb[k] += float(bmns_np[mn]) * sint
+
+                err = [
+                    abs(bmodb[k] - bmodv[k]) / max(abs(bmodb[k]), abs(bmodv[k]), 1e-30)
+                    for k in range(4)
+                ]
+
+                print(
+                    f"  0  {bmodv[0]:11.3E}{bmodb[0]:11.3E}{err[0]:11.3E}"
+                    f"{jrad:5d}  {bmodv[1]:11.3E}{bmodb[1]:11.3E}{err[1]:11.3E}"
+                )
+                print(
+                    f" pi  {bmodv[2]:11.3E}{bmodb[2]:11.3E}{err[2]:11.3E}"
+                    f"       {bmodv[3]:11.3E}{bmodb[3]:11.3E}{err[3]:11.3E}"
+                )
 
         # ------------------------------------------------------------------
         # Store results on the instance
