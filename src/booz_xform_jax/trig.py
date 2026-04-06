@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from functools import partial
 
+import numpy as _np
+
 try:
     import jax
     import jax.numpy as jnp
@@ -12,6 +14,29 @@ except ImportError as e:  # pragma: no cover
         "The booz_xform_jax package requires JAX. Please install jax and "
         "jaxlib before using this module."
     ) from e
+
+
+def _init_trig_np(
+    theta_grid: _np.ndarray,
+    zeta_grid: _np.ndarray,
+    mmax: int,
+    nmax: int,
+    nfp: int,
+) -> tuple[_np.ndarray, _np.ndarray, _np.ndarray, _np.ndarray]:
+    """Pure-NumPy version of :func:`_init_trig` — no JAX dispatch overhead.
+
+    Returns four arrays:
+      cosm[i, m] = cos(m * theta[i])
+      sinm[i, m] = sin(m * theta[i])
+      cosn[i, n] = cos(n * nfp * zeta[i])
+      sinn[i, n] = sin(n * nfp * zeta[i])
+    with m in [0, mmax] and n in [0, nmax].
+    """
+    m_vals = _np.arange(0, mmax + 1, dtype=float)          # (mmax+1,)
+    n_vals = _np.arange(0, nmax + 1, dtype=float) * nfp    # (nmax+1,)
+    theta_m = _np.outer(theta_grid, m_vals)                 # (N, mmax+1)
+    zeta_n  = _np.outer(zeta_grid,  n_vals)                 # (N, nmax+1)
+    return _np.cos(theta_m), _np.sin(theta_m), _np.cos(zeta_n), _np.sin(zeta_n)
 
 
 @partial(jax.jit, static_argnums=(2, 3, 4))

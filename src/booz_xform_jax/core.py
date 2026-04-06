@@ -124,7 +124,7 @@ except ImportError as e:  # pragma: no cover
 from .vmec import init_from_vmec, read_wout, read_wout_data
 from .io_utils import write_boozmn, read_boozmn
 from .jax_api import booz_xform_jax_impl, prepare_booz_xform_constants
-from .trig import _init_trig
+from .trig import _init_trig, _init_trig_np
 
 
 # -----------------------------------------------------------------------------
@@ -726,6 +726,48 @@ class Booz_xform:
         n_nyq_f = xn_nyq.astype(jnp.float64)
 
         # ------------------------------------------------------------------
+        # Convert all hoisted JAX arrays to NumPy once.
+        # This eliminates every JAX dispatch and device→host sync from the
+        # per-surface loop — replacing jnp.einsum with numpy matmul (@).
+        # ------------------------------------------------------------------
+        tcos_non_np    = _np.asarray(tcos_non)       # (N, mnmax_non)
+        tsin_non_np    = _np.asarray(tsin_non)
+        tcos_nyq_np    = _np.asarray(tcos_nyq)       # (N, mnmax_nyq)
+        tsin_nyq_np    = _np.asarray(tsin_nyq)
+        m_non_f_np     = _np.asarray(m_non_f)        # (mnmax_non,)
+        n_non_f_np     = _np.asarray(n_non_f)
+        m_nyq_f_np     = _np.asarray(m_nyq_f)        # (mnmax_nyq,)
+        n_nyq_f_np     = _np.asarray(n_nyq_f)
+        theta_grid_np  = _np.asarray(theta_grid)     # (N,)
+        zeta_grid_np   = _np.asarray(zeta_grid)
+
+        # VMEC coefficient arrays (per-surface slices become plain numpy views)
+        rmnc_arr      = _np.asarray(self.rmnc)        # (mnmax_non, ns_in)
+        zmns_arr      = _np.asarray(self.zmns)
+        lmns_arr      = _np.asarray(self.lmns)
+        bmnc_arr      = _np.asarray(self.bmnc)        # (mnmax_nyq, ns_in)
+        bsubumnc_arr  = _np.asarray(self.bsubumnc)
+        bsubvmnc_arr  = _np.asarray(self.bsubvmnc)
+        iota_arr      = _np.asarray(self.iota)        # (ns_in,)
+
+        if self.asym:
+            rmns_arr     = _np.asarray(self.rmns)    if self.rmns     is not None else None
+            zmnc_arr     = _np.asarray(self.zmnc)    if self.zmnc     is not None else None
+            lmnc_arr     = _np.asarray(self.lmnc)    if self.lmnc     is not None else None
+            bmns_arr     = _np.asarray(self.bmns)    if self.bmns     is not None else None
+            bsubumns_arr = _np.asarray(self.bsubumns) if self.bsubumns is not None else None
+            bsubvmns_arr = _np.asarray(self.bsubvmns) if self.bsubvmns is not None else None
+        else:
+            rmns_arr = zmnc_arr = lmnc_arr = bmns_arr = None
+            bsubumns_arr = bsubvmns_arr = None
+
+        # Hoist wmns boolean masks and safe-divisors out of the surface loop.
+        m_nonzero_np       = m_nyq_f_np != 0.0
+        n_nonzero_only_np  = ~m_nonzero_np & (n_nyq_f_np != 0.0)
+        m_nyq_f_safe       = _np.where(m_nonzero_np,      m_nyq_f_np, 1.0)
+        n_nyq_f_safe       = _np.where(n_nonzero_only_np, n_nyq_f_np, 1.0)
+
+        # ------------------------------------------------------------------
         # Output arrays (NumPy, host side)
         # ------------------------------------------------------------------
         ns_b = len(self.compute_surfs)
@@ -792,8 +834,9 @@ class Booz_xform:
             _xn_b_np_f = _np.asarray(xn_b_j, dtype=float)
 
         # Convenience indices for symmetric θ integration (θ=0 and θ=π rows).
-        idx_theta0 = jnp.arange(0, self._nzeta)
-        idx_thetapi = jnp.arange(
+        # NumPy integer arrays — used for in-place *= 0.5 on numpy trig tables.
+        idx_theta0  = _np.arange(0, self._nzeta)
+        idx_thetapi = _np.arange(
             (self._nu2_b - 1) * self._nzeta, self._nu2_b * self._nzeta
         )
 
@@ -822,6 +865,7 @@ class Booz_xform:
             # ------------------------------------------------------------------
             # 2) Build w spectrum (wmns, wmnc) from B_θ and B_ζ Nyquist data
             # ------------------------------------------------------------------
+            # Pure NumPy — all arrays converted before the loop; no JAX dispatch.
             # The auxiliary w(θ, ζ) is defined so that
             #
             #    ∂w/∂θ = B_ζ   (up to constants)
@@ -830,99 +874,77 @@ class Booz_xform:
             # and its Fourier coefficients are algebraic combinations of
             # the Nyquist B_θ and B_ζ coefficients. The logic here mirrors
             # the original transpmn.f.
-            bsubumnc_js = self.bsubumnc[:, js]
-            bsubvmnc_js = self.bsubvmnc[:, js]
-            if self.asym and self.bsubumns is not None and self.bsubvmns is not None:
-                bsubumns_js = self.bsubumns[:, js]
-                bsubvmns_js = self.bsubvmns[:, js]
+            bsubumnc_js = bsubumnc_arr[:, js]
+            bsubvmnc_js = bsubvmnc_arr[:, js]
+            if self.asym and bsubumns_arr is not None and bsubvmns_arr is not None:
+                bsubumns_js = bsubumns_arr[:, js]
+                bsubvmns_js = bsubvmns_arr[:, js]
             else:
-                bsubumns_js = None
-                bsubvmns_js = None
+                bsubumns_js = bsubvmns_js = None
 
-            m_nonzero = m_nyq_f != 0.0
-            n_nonzero_only = jnp.logical_and(~m_nonzero, n_nyq_f != 0.0)
-
-            # wmns: cosine-like combination
-            wmns = jnp.where(
-                m_nonzero,
-                bsubumnc_js / m_nyq_f,
-                jnp.where(n_nonzero_only, -bsubvmnc_js / n_nyq_f, 0.0),
-            )
+            # wmns: cosine-like combination (safe divisors avoid 0/0 at m=n=0)
+            wmns = _np.where(m_nonzero_np,
+                             bsubumnc_js / m_nyq_f_safe,
+                             _np.where(n_nonzero_only_np,
+                                       -bsubvmnc_js / n_nyq_f_safe, 0.0))
             if self.asym and bsubumns_js is not None and bsubvmns_js is not None:
                 # wmnc: sine-like combination (only used in asymmetric case)
-                wmnc = jnp.where(
-                    m_nonzero,
-                    -bsubumns_js / m_nyq_f,
-                    jnp.where(n_nonzero_only, bsubvmns_js / n_nyq_f, 0.0),
-                )
+                wmnc = _np.where(m_nonzero_np,
+                                 -bsubumns_js / m_nyq_f_safe,
+                                 _np.where(n_nonzero_only_np,
+                                           bsubvmns_js / n_nyq_f_safe, 0.0))
             else:
                 wmnc = None
 
-            bmnc_js = self.bmnc[:, js]
-            bmns_js = self.bmns[:, js] if self.asym and self.bmns is not None else None
+            bmnc_js = bmnc_arr[:, js]
+            bmns_js = bmns_arr[:, js] if bmns_arr is not None else None
 
             # ------------------------------------------------------------------
-            # 3) Non-Nyquist R, Z, λ and derivatives using hoisted tcos/tsin
+            # 3) Non-Nyquist R, Z, λ and derivatives — NumPy matmul
             # ------------------------------------------------------------------
-            # Grab this surface's non-Nyquist coefficients
-            this_rmnc = self.rmnc[:, js]
-            this_zmns = self.zmns[:, js]
-            this_lmns = self.lmns[:, js]
+            this_rmnc = rmnc_arr[:, js]
+            this_zmns = zmns_arr[:, js]
+            this_lmns = lmns_arr[:, js]
 
-            if self.asym and self.rmns is not None and self.zmnc is not None and self.lmnc is not None:
-                this_rmns = self.rmns[:, js]
-                this_zmnc = self.zmnc[:, js]
-                this_lmnc = self.lmnc[:, js]
+            if self.asym and rmns_arr is not None and zmnc_arr is not None and lmnc_arr is not None:
+                this_rmns = rmns_arr[:, js]
+                this_zmnc = zmnc_arr[:, js]
+                this_lmnc = lmnc_arr[:, js]
             else:
                 this_rmns = this_zmnc = this_lmnc = None
 
-            # Real-space synthesis via einsum:
-            #   r(θ, ζ)   = Σ tcos_non * rmnc
-            #   z(θ, ζ)   = Σ tsin_non * zmns
-            #   λ(θ, ζ)   = Σ tsin_non * lmns
-            #
-            #   ∂λ/∂θ = Σ tcos_non * (m * lmns)
-            #   ∂λ/∂ζ = -Σ tcos_non * (n * lmns)
-            r = jnp.einsum("ij,j->i", tcos_non, this_rmnc)
-            z = jnp.einsum("ij,j->i", tsin_non, this_zmns)
-            lam = jnp.einsum("ij,j->i", tsin_non, this_lmns)
-            dlam_dth = jnp.einsum("ij,j->i", tcos_non, this_lmns * m_non_f)
-            dlam_dze = -jnp.einsum("ij,j->i", tcos_non, this_lmns * n_non_f)
+            r        = tcos_non_np @ this_rmnc
+            z        = tsin_non_np @ this_zmns
+            lam      = tsin_non_np @ this_lmns
+            dlam_dth = tcos_non_np @ (this_lmns * m_non_f_np)
+            dlam_dze = -(tcos_non_np @ (this_lmns * n_non_f_np))
 
             if self.asym and this_rmns is not None:
-                r = r + jnp.einsum("ij,j->i", tsin_non, this_rmns)
-                z = z + jnp.einsum("ij,j->i", tcos_non, this_zmnc)
-                lam = lam + jnp.einsum("ij,j->i", tcos_non, this_lmnc)
-                dlam_dth = dlam_dth - jnp.einsum(
-                    "ij,j->i", tsin_non, this_lmnc * m_non_f
-                )
-                dlam_dze = dlam_dze + jnp.einsum(
-                    "ij,j->i", tsin_non, this_lmnc * n_non_f
-                )
+                r        = r        + tsin_non_np @ this_rmns
+                z        = z        + tcos_non_np @ this_zmnc
+                lam      = lam      + tcos_non_np @ this_lmnc
+                dlam_dth = dlam_dth - tsin_non_np @ (this_lmnc * m_non_f_np)
+                dlam_dze = dlam_dze + tsin_non_np @ (this_lmnc * n_non_f_np)
 
             # ------------------------------------------------------------------
-            # 4) Nyquist w, ∂w/∂θ, ∂w/∂ζ and |B| using hoisted tcos_nyq/tsin_nyq
+            # 4) Nyquist w, ∂w/∂θ, ∂w/∂ζ and |B| — NumPy matmul
             # ------------------------------------------------------------------
-            w = jnp.einsum("ij,j->i", tsin_nyq, wmns)
-            dw_dth = jnp.einsum("ij,j->i", tcos_nyq, wmns * m_nyq_f)
-            dw_dze = -jnp.einsum("ij,j->i", tcos_nyq, wmns * n_nyq_f)
-            bmod = jnp.einsum("ij,j->i", tcos_nyq, bmnc_js)
+            w      = tsin_nyq_np @ wmns
+            dw_dth = tcos_nyq_np @ (wmns * m_nyq_f_np)
+            dw_dze = -(tcos_nyq_np @ (wmns * n_nyq_f_np))
+            bmod   = tcos_nyq_np @ bmnc_js
 
             if self.asym and wmnc is not None and bmns_js is not None:
-                w = w + jnp.einsum("ij,j->i", tcos_nyq, wmnc)
-                dw_dth = dw_dth - jnp.einsum(
-                    "ij,j->i", tsin_nyq, wmnc * m_nyq_f
-                )
-                dw_dze = dw_dze + jnp.einsum(
-                    "ij,j->i", tsin_nyq, wmnc * n_nyq_f
-                )
-                bmod = bmod + jnp.einsum("ij,j->i", tsin_nyq, bmns_js)
+                w      = w      + tcos_nyq_np @ wmnc
+                dw_dth = dw_dth - tsin_nyq_np @ (wmnc * m_nyq_f_np)
+                dw_dze = dw_dze + tsin_nyq_np @ (wmnc * n_nyq_f_np)
+                bmod   = bmod   + tsin_nyq_np @ bmns_js
 
             # ------------------------------------------------------------------
             # 5) ν, Boozer angles, their derivatives, J_B, and dB/d(vmec)
             # ------------------------------------------------------------------
-            this_iota = float(self.iota[js])
-            GI = Boozer_G_js + this_iota * Boozer_I_js
+            this_iota  = float(iota_arr[js])
+            GI         = Boozer_G_js + this_iota * Boozer_I_js
             one_over_GI = 1.0 / GI
 
             # ν from eq (10): ν = (w - I λ) / (G + ι I)
@@ -931,8 +953,8 @@ class Booz_xform:
             # Boozer angles from eq (3):
             #   θ_B = θ + λ + ι ν
             #   ζ_B = ζ + ν
-            theta_B = theta_grid + lam + this_iota * nu
-            zeta_B = zeta_grid + nu
+            theta_B = theta_grid_np + lam + this_iota * nu
+            zeta_B  = zeta_grid_np  + nu
 
             # Derivatives of ν:
             dnu_dze = one_over_GI * (dw_dze - Boozer_I_js * dlam_dze)
@@ -940,73 +962,58 @@ class Booz_xform:
 
             # Eq (12): dB/d(vmec) factor
             dB_dvmec = (1.0 + dlam_dth) * (1.0 + dnu_dze) + \
-                (this_iota - dlam_dze) * dnu_dth
+                       (this_iota - dlam_dze) * dnu_dth
 
             # Store VMEC-space |B| at 4 fixed points for accuracy check later
             if _verbose:
                 bmodv = (
-                    float(bmod[idx_00]),     # (u=0, v=0)
-                    float(bmod[idx_pi0]),    # (u=pi, v=0)
-                    float(bmod[idx_0pi]),    # (u=0, v=pi)
-                    float(bmod[idx_pipi]),   # (u=pi, v=pi)
+                    float(bmod[idx_00]),   # (u=0, v=0)
+                    float(bmod[idx_pi0]),  # (u=pi, v=0)
+                    float(bmod[idx_0pi]),  # (u=0, v=pi)
+                    float(bmod[idx_pipi]), # (u=pi, v=pi)
                 )
-                # Boozer angles at those 4 grid points
                 u_b = (
-                    float(theta_B[idx_00]),
-                    float(theta_B[idx_pi0]),
-                    float(theta_B[idx_0pi]),
-                    float(theta_B[idx_pipi]),
+                    float(theta_B[idx_00]),  float(theta_B[idx_pi0]),
+                    float(theta_B[idx_0pi]), float(theta_B[idx_pipi]),
                 )
                 v_b = (
-                    float(zeta_B[idx_00]),
-                    float(zeta_B[idx_pi0]),
-                    float(zeta_B[idx_0pi]),
-                    float(zeta_B[idx_pipi]),
+                    float(zeta_B[idx_00]),  float(zeta_B[idx_pi0]),
+                    float(zeta_B[idx_0pi]), float(zeta_B[idx_pipi]),
                 )
 
             # ------------------------------------------------------------------
-            # 6) Boozer trig tables on (theta_B, zeta_B)
+            # 6) Boozer trig tables on (theta_B, zeta_B) — pure NumPy
             # ------------------------------------------------------------------
-            # We now regard (θ_B, ζ_B) as the independent variables and
-            # build trigonometric tables used in the final Fourier integrals.
-            cosm_b, sinm_b, cosn_b, sinn_b = _init_trig(
+            cosm_b, sinm_b, cosn_b, sinn_b = _init_trig_np(
                 theta_B, zeta_B, int(self.mboz), int(self.nboz), self.nfp
             )
 
             # Symmetric θ integration: half weight for θ=0 and θ=π rows.
-            # This implements the standard trapezoidal rule on [0, π]
-            # when using only one half of the full θ range.
             if not self.asym:
-                cosm_b = cosm_b.at[idx_theta0, :].set(cosm_b[idx_theta0, :] * 0.5)
-                cosm_b = cosm_b.at[idx_thetapi, :].set(
-                    cosm_b[idx_thetapi, :] * 0.5
-                )
-                sinm_b = sinm_b.at[idx_theta0, :].set(sinm_b[idx_theta0, :] * 0.5)
-                sinm_b = sinm_b.at[idx_thetapi, :].set(
-                    sinm_b[idx_thetapi, :] * 0.5
-                )
+                cosm_b[idx_theta0,  :] *= 0.5
+                cosm_b[idx_thetapi, :] *= 0.5
+                sinm_b[idx_theta0,  :] *= 0.5
+                sinm_b[idx_thetapi, :] *= 0.5
 
-            # Boozer Jacobian:
-            #   J_B = (G + ι I) / |B|² = GI / |B|²
+            # Boozer Jacobian:  J_B = (G + ι I) / |B|² = GI / |B|²
             boozer_jac = GI / (bmod * bmod)
 
             # ------------------------------------------------------------------
             # 7) Final Fourier integrals — chunked batched-matmul
             # ------------------------------------------------------------------
-            # Pre-weight field quantities once per surface: O(N), no mode dim.
-            # All JAX arrays transferred to NumPy host here (one sync per surf).
-            _dB      = _np.asarray(dB_dvmec)     # (N,)
-            _bmod_np = _np.asarray(bmod)          # (N,)
-            _r_np    = _np.asarray(r)             # (N,)
-            _z_np    = _np.asarray(z)             # (N,)
-            _nu_np   = _np.asarray(nu)            # (N,)
-            _jac_np  = _np.asarray(boozer_jac)   # (N,)
+            # All quantities are already NumPy at this point (no JAX in steps 2-6).
+            _dB      = dB_dvmec   # (N,)
+            _bmod_np = bmod
+            _r_np    = r
+            _z_np    = z
+            _nu_np   = nu
+            _jac_np  = boozer_jac
 
-            # Boozer trig tables transferred once per surface
-            _cosm_b_np = _np.asarray(cosm_b)     # (N, mboz+1)
-            _sinm_b_np = _np.asarray(sinm_b)
-            _cosn_b_np = _np.asarray(cosn_b)     # (N, nboz+1)
-            _sinn_b_np = _np.asarray(sinn_b)
+            # Boozer trig tables from _init_trig_np — already NumPy
+            _cosm_b_np = cosm_b   # (N, mboz+1)
+            _sinm_b_np = sinm_b
+            _cosn_b_np = cosn_b   # (N, nboz+1)
+            _sinn_b_np = sinn_b
 
             # Stack weighted fields: (n_fields, N)
             # cos_fields[k] @ tcos_c → cosine Fourier integral for field k
