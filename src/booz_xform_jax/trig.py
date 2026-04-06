@@ -39,6 +39,33 @@ def _init_trig_np(
     return _np.cos(theta_m), _np.sin(theta_m), _np.cos(zeta_n), _np.sin(zeta_n)
 
 
+def _init_trig_np_T(
+    theta_grid: _np.ndarray,
+    zeta_grid: _np.ndarray,
+    mmax: int,
+    nmax: int,
+    nfp: int,
+) -> tuple[_np.ndarray, _np.ndarray, _np.ndarray, _np.ndarray]:
+    """Like :func:`_init_trig_np` but returns **transposed** (mode-major) tables.
+
+    Returns shape (mmax+1, N) for cos/sin_m and (nmax+1, N) for cos/sin_n.
+    Row-major storage means each row (one m or n value) is contiguous in memory,
+    so ``table[mode_indices, :]`` is a fast sequential-copy gather instead of a
+    stride-heavy column gather.  Used for the per-surface Boozer trig tables.
+    """
+    m_vals = _np.arange(0, mmax + 1, dtype=float)
+    n_vals = _np.arange(0, nmax + 1, dtype=float) * nfp
+    theta_m = _np.outer(theta_grid, m_vals)   # (N, mmax+1)
+    zeta_n  = _np.outer(zeta_grid,  n_vals)   # (N, nmax+1)
+    # Transpose so that axis-0 is the mode index → contiguous row-gather
+    return (
+        _np.cos(theta_m).T.copy(),   # (mmax+1, N) C-contiguous
+        _np.sin(theta_m).T.copy(),
+        _np.cos(zeta_n).T.copy(),    # (nmax+1, N) C-contiguous
+        _np.sin(zeta_n).T.copy(),
+    )
+
+
 @partial(jax.jit, static_argnums=(2, 3, 4))
 def _init_trig(
     theta_grid: jnp.ndarray,

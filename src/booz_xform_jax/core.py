@@ -124,7 +124,7 @@ except ImportError as e:  # pragma: no cover
 from .vmec import init_from_vmec, read_wout, read_wout_data
 from .io_utils import write_boozmn, read_boozmn
 from .jax_api import booz_xform_jax_impl, prepare_booz_xform_constants
-from .trig import _init_trig, _init_trig_np
+from .trig import _init_trig, _init_trig_np, _init_trig_np_T
 
 
 # -----------------------------------------------------------------------------
@@ -817,16 +817,11 @@ class Booz_xform:
         # Each chunk allocates 2×(N×L)×8 bytes for tcos_c / tsin_c.
         # Default cap: 200 MB; override via BOOZ_XFORM_JAX_CHUNK_BYTES env var.
         # ------------------------------------------------------------------
-        _chunk_bytes = int(_os.environ.get("BOOZ_XFORM_JAX_CHUNK_BYTES",
-                                           str(200 * 1024 ** 2)))
-        _chunk_size = max(1, min(mnboz,
-                                 int(_chunk_bytes // (2 * n_theta_zeta * 8))))
-
-        # NumPy copies of constant mode arrays (convert once, reuse each surface)
-        _m_b_chunk  = _np.asarray(_m_b_np_idx)       # (mnboz,) int
-        _n_b_chunk  = _np.asarray(_abs_n_b_np)        # (mnboz,) int
-        _ff_chunk   = _np.asarray(_fourier_factor)    # (mnboz,) float
-        _sgn_chunk  = _np.asarray(_sign_b_hoisted[0]) # (mnboz,) float
+        # NumPy copies of constant mode index/weight arrays
+        _m_b_chunk  = _np.asarray(_m_b_np_idx)        # (mnboz,) int
+        _n_b_chunk  = _np.asarray(_abs_n_b_np)         # (mnboz,) int
+        _ff_chunk   = _np.asarray(_fourier_factor)     # (mnboz,) float
+        _sgn_chunk  = _np.asarray(_sign_b_hoisted[0])  # (mnboz,) float
 
         # NumPy copies for the verbose modbooz reconstruction
         if _verbose:
@@ -988,72 +983,78 @@ class Booz_xform:
                 theta_B, zeta_B, int(self.mboz), int(self.nboz), self.nfp
             )
 
-            # Symmetric θ integration: half weight for θ=0 and θ=π rows.
-            if not self.asym:
-                cosm_b[idx_theta0,  :] *= 0.5
-                cosm_b[idx_thetapi, :] *= 0.5
-                sinm_b[idx_theta0,  :] *= 0.5
-                sinm_b[idx_thetapi, :] *= 0.5
-
             # Boozer Jacobian:  J_B = (G + ι I) / |B|² = GI / |B|²
             boozer_jac = GI / (bmod * bmod)
 
             # ------------------------------------------------------------------
-            # 7) Final Fourier integrals — chunked batched-matmul
+            # 7) Final Fourier integrals — double-spectral decomposition
             # ------------------------------------------------------------------
-            # All quantities are already NumPy at this point (no JAX in steps 2-6).
-            _dB      = dB_dvmec   # (N,)
-            _bmod_np = bmod
-            _r_np    = r
-            _z_np    = z
-            _nu_np   = nu
-            _jac_np  = boozer_jac
+            # Separability of the Boozer trig factor:
+            #   tcos[i, j] = cosm[i,m_j]*cosn[i,n_j] + sinm[i,m_j]*sinn[i,n_j]*sgn_j
+            #   tsin[i, j] = sinm[i,m_j]*cosn[i,n_j] - cosm[i,m_j]*sinn[i,n_j]*sgn_j
+            #
+            # The Fourier integral factors as two tiny DGEMM calls per field:
+            #   X_c[m, n] = cosm.T @ (field * cosn)   shape (mboz+1, nboz+1)
+            #   X_s[m, n] = sinm.T @ (field * sinn)
+            #   Y_sc[m,n] = sinm.T @ (field * cosn)
+            #   Y_cs[m,n] = cosm.T @ (field * sinn)
+            #
+            # Then scatter: cos_out[j] = ff_j*(X_c[m_j,n_j] + sgn_j*X_s[m_j,n_j])
+            #                sin_out[j] = ff_j*(Y_sc[m_j,n_j] - sgn_j*Y_cs[m_j,n_j])
+            #
+            # Peak memory: O(N*(mboz+1)) not O(N*mnboz); no chunk loop needed.
 
-            # Boozer trig tables from _init_trig_np — already NumPy
-            _cosm_b_np = cosm_b   # (N, mboz+1)
-            _sinm_b_np = sinm_b
-            _cosn_b_np = cosn_b   # (N, nboz+1)
-            _sinn_b_np = sinn_b
+            # Apply symmetric half-weight to a dB copy (not to trig tables)
+            _dB = dB_dvmec.copy() if not self.asym else dB_dvmec
+            if not self.asym:
+                _dB[idx_theta0]  *= 0.5
+                _dB[idx_thetapi] *= 0.5
 
-            # Stack weighted fields: (n_fields, N)
-            # cos_fields[k] @ tcos_c → cosine Fourier integral for field k
-            # sin_fields[k] @ tsin_c → sine  Fourier integral for field k
+            # Reusable transpose views (no copy — BLAS handles Fortran order)
+            _cmT = cosm_b.T   # (mboz+1, N)
+            _smT = sinm_b.T   # (mboz+1, N)
+
+            _cos_out = _np.empty((5 if self.asym else 3, mnboz), dtype=float)
+            _sin_out = _np.empty((5 if self.asym else 2, mnboz), dtype=float)
+
             if self.asym:
-                cos_fields = _np.stack([           # (5, N)
-                    _bmod_np * _dB, _r_np * _dB, _z_np * _dB,
-                    _nu_np * _dB, _jac_np * _dB,
-                ])
-                sin_fields = cos_fields            # same weights, different trig
+                # All 5 fields contribute to both cosine and sine output
+                _field_list = [bmod, r, z, nu, boozer_jac]
+                for k, fk in enumerate(_field_list):
+                    _fkdB = fk * _dB                    # (N,) weighted field
+                    _fcn  = _fkdB[:, None] * cosn_b     # (N, nboz+1)
+                    _fsn  = _fkdB[:, None] * sinn_b     # (N, nboz+1)
+                    _Xc = _cmT @ _fcn                   # (mboz+1, nboz+1)
+                    _Xs = _smT @ _fsn
+                    _Ysc = _smT @ _fcn
+                    _Ycs = _cmT @ _fsn
+                    _cos_out[k] = _ff_chunk * (
+                        _Xc[_m_b_chunk, _n_b_chunk] + _sgn_chunk * _Xs[_m_b_chunk, _n_b_chunk]
+                    )
+                    _sin_out[k] = _ff_chunk * (
+                        _Ysc[_m_b_chunk, _n_b_chunk] - _sgn_chunk * _Ycs[_m_b_chunk, _n_b_chunk]
+                    )
             else:
-                cos_fields = _np.stack([           # (3, N)
-                    _bmod_np * _dB, _r_np * _dB, _jac_np * _dB,
-                ])
-                sin_fields = _np.stack([           # (2, N)
-                    _z_np * _dB, _nu_np * _dB,
-                ])
-
-            _cos_out = _np.zeros((cos_fields.shape[0], mnboz), dtype=float)
-            _sin_out = _np.zeros((sin_fields.shape[0], mnboz), dtype=float)
-
-            for _c0 in range(0, mnboz, _chunk_size):
-                _sl   = slice(_c0, min(_c0 + _chunk_size, mnboz))
-                _cm   = _m_b_chunk[_sl]            # (L,) mode-m indices
-                _cn   = _n_b_chunk[_sl]            # (L,) mode-|n| indices
-                _csgn = _sgn_chunk[_sl]            # (L,) sign of n
-                _cff  = _ff_chunk[_sl]             # (L,) Fourier factor
-
-                _cosm_c = _cosm_b_np[:, _cm]       # (N, L)
-                _sinm_c = _sinm_b_np[:, _cm]
-                _cosn_c = _cosn_b_np[:, _cn]
-                _sinn_c = _sinn_b_np[:, _cn]
-
-                # Boozer trig: cos(m*u_B ∓ |n|*nfp*v_B)  (same as original)
-                _tcos_c = _cosm_c * _cosn_c + _sinm_c * _sinn_c * _csgn  # (N, L)
-                _tsin_c = _sinm_c * _cosn_c - _cosm_c * _sinn_c * _csgn  # (N, L)
-
-                # Batched matmul: (n_fields, N) @ (N, L) → (n_fields, L)
-                _cos_out[:, _sl] = (cos_fields @ _tcos_c) * _cff
-                _sin_out[:, _sl] = (sin_fields @ _tsin_c) * _cff
+                # Cosine-output fields: bmod, r, jac
+                for k, fk in enumerate([bmod, r, boozer_jac]):
+                    _fkdB = fk * _dB
+                    _fcn  = _fkdB[:, None] * cosn_b
+                    _fsn  = _fkdB[:, None] * sinn_b
+                    _Xc = _cmT @ _fcn
+                    _Xs = _smT @ _fsn
+                    _cos_out[k] = _ff_chunk * (
+                        _Xc[_m_b_chunk, _n_b_chunk] + _sgn_chunk * _Xs[_m_b_chunk, _n_b_chunk]
+                    )
+                # Sine-output fields: z, nu
+                for k, fk in enumerate([z, nu]):
+                    _fkdB = fk * _dB
+                    _fcn  = _fkdB[:, None] * cosn_b
+                    _fsn  = _fkdB[:, None] * sinn_b
+                    _Ysc = _smT @ _fcn
+                    _Ycs = _cmT @ _fsn
+                    _sin_out[k] = _ff_chunk * (
+                        _Ysc[_m_b_chunk, _n_b_chunk] - _sgn_chunk * _Ycs[_m_b_chunk, _n_b_chunk]
+                    )
 
             # Write to NumPy output buffers (no .asarray needed — already host)
             bmnc_b[:, js_b] = _cos_out[0]
