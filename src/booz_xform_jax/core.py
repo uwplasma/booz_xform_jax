@@ -796,6 +796,71 @@ class Booz_xform:
         Boozer_G = _np.asarray(self.bsubvmnc[idx00, _surfs_np], dtype=float)
 
         # ------------------------------------------------------------------
+        # Batch VMEC synthesis — compute all surface fields in one DGEMM.
+        # tcos_non_np is (N, mnmax_non); rmnc_arr[:, surfs] is (mnmax_non, ns_b)
+        # Result: (N, ns_b) per field.  Keeps the trig matrix in L3/L4 cache
+        # rather than re-reading it for each of the ns_b surfaces.
+        # ------------------------------------------------------------------
+        _lmns_s    = lmns_arr[:, _surfs_np]                          # (mnmax_non, ns_b)
+        _lmns_m_s  = _lmns_s * m_non_f_np[:, None]                   # pre-scaled
+        _lmns_n_s  = _lmns_s * n_non_f_np[:, None]
+        _r_all       = tcos_non_np @ rmnc_arr[:, _surfs_np]           # (N, ns_b)
+        _z_all       = tsin_non_np @ zmns_arr[:, _surfs_np]
+        _lam_all     = tsin_non_np @ _lmns_s
+        _dlam_dth_all = tcos_non_np @ _lmns_m_s
+        _dlam_dze_all = -(tcos_non_np @ _lmns_n_s)
+
+        # wmns for all surfaces at once: (mnmax_nyq, ns_b)
+        _bsubumnc_s = bsubumnc_arr[:, _surfs_np]                      # (mnmax_nyq, ns_b)
+        _bsubvmnc_s = bsubvmnc_arr[:, _surfs_np]
+        _wmns_all   = _np.where(m_nonzero_np[:, None],
+                                _bsubumnc_s / m_nyq_f_safe[:, None],
+                                _np.where(n_nonzero_only_np[:, None],
+                                          -_bsubvmnc_s / n_nyq_f_safe[:, None], 0.0))
+        _wmns_m_s   = _wmns_all * m_nyq_f_np[:, None]
+        _wmns_n_s   = _wmns_all * n_nyq_f_np[:, None]
+        _w_all       = tsin_nyq_np @ _wmns_all                        # (N, ns_b)
+        _dw_dth_all  = tcos_nyq_np @ _wmns_m_s
+        _dw_dze_all  = -(tcos_nyq_np @ _wmns_n_s)
+        _bmod_all    = tcos_nyq_np @ bmnc_arr[:, _surfs_np]           # (N, ns_b)
+
+        if self.asym:
+            if lmnc_arr is not None:
+                _lmnc_s   = lmnc_arr[:, _surfs_np]
+                _lmnc_m_s = _lmnc_s * m_non_f_np[:, None]
+                _lmnc_n_s = _lmnc_s * n_non_f_np[:, None]
+                _r_all       = _r_all       + tsin_non_np @ rmns_arr[:, _surfs_np]
+                _z_all       = _z_all       + tcos_non_np @ zmnc_arr[:, _surfs_np]
+                _lam_all     = _lam_all     + tcos_non_np @ _lmnc_s
+                _dlam_dth_all = _dlam_dth_all - tsin_non_np @ _lmnc_m_s
+                _dlam_dze_all = _dlam_dze_all + tsin_non_np @ _lmnc_n_s
+            if bsubumns_arr is not None:
+                _bsubumns_s = bsubumns_arr[:, _surfs_np]
+                _bsubvmns_s = bsubvmns_arr[:, _surfs_np]
+                _wmnc_all = _np.where(m_nonzero_np[:, None],
+                                      -_bsubumns_s / m_nyq_f_safe[:, None],
+                                      _np.where(n_nonzero_only_np[:, None],
+                                                _bsubvmns_s / n_nyq_f_safe[:, None], 0.0))
+                _wmnc_m_s = _wmnc_all * m_nyq_f_np[:, None]
+                _wmnc_n_s = _wmnc_all * n_nyq_f_np[:, None]
+                _w_all      = _w_all      + tcos_nyq_np @ _wmnc_all
+                _dw_dth_all = _dw_dth_all - tsin_nyq_np @ _wmnc_m_s
+                _dw_dze_all = _dw_dze_all + tsin_nyq_np @ _wmnc_n_s
+                _bmod_all   = _bmod_all   + tsin_nyq_np @ bmns_arr[:, _surfs_np]
+
+        # Pre-allocate reusable scratch buffers for the double-spectral step.
+        # This eliminates ~10 small allocations per surface.
+        _N  = int(theta_grid_np.shape[0])
+        _nb = int(self.nboz) + 1
+        _mb = int(self.mboz) + 1
+        _fcn_buf = _np.empty((_N, _nb), dtype=float)
+        _fsn_buf = _np.empty((_N, _nb), dtype=float)
+        _Xc_buf  = _np.empty((_mb, _nb), dtype=float)
+        _Xs_buf  = _np.empty((_mb, _nb), dtype=float)
+        _Ysc_buf = _np.empty((_mb, _nb), dtype=float)
+        _Ycs_buf = _np.empty((_mb, _nb), dtype=float)
+
+        # ------------------------------------------------------------------
         # Hoist Boozer-mode index arrays out of the surface loop.
         # These depend only on xm_b / xn_b which are constant across surfaces.
         # Computing them inside the loop triggers repeated device→host syncs.
@@ -851,89 +916,27 @@ class Booz_xform:
                 print(f"[booz_xform_jax] Solving surface js_b={js_b}, js={js}")
 
             # ------------------------------------------------------------------
-            # 1) Boozer I and G from (m=0, n=0) Nyquist mode
-            # (already batch-extracted before the loop; just read host array)
+            # 2) Boozer I and G (already batch-extracted before the loop)
             # ------------------------------------------------------------------
             Boozer_I_js = Boozer_I[js_b]
             Boozer_G_js = Boozer_G[js_b]
 
             # ------------------------------------------------------------------
-            # 2) Build w spectrum (wmns, wmnc) from B_θ and B_ζ Nyquist data
+            # 3) R, Z, λ and derivatives — sliced from pre-batched arrays
             # ------------------------------------------------------------------
-            # Pure NumPy — all arrays converted before the loop; no JAX dispatch.
-            # The auxiliary w(θ, ζ) is defined so that
-            #
-            #    ∂w/∂θ = B_ζ   (up to constants)
-            #    ∂w/∂ζ = -B_θ  (up to constants)
-            #
-            # and its Fourier coefficients are algebraic combinations of
-            # the Nyquist B_θ and B_ζ coefficients. The logic here mirrors
-            # the original transpmn.f.
-            bsubumnc_js = bsubumnc_arr[:, js]
-            bsubvmnc_js = bsubvmnc_arr[:, js]
-            if self.asym and bsubumns_arr is not None and bsubvmns_arr is not None:
-                bsubumns_js = bsubumns_arr[:, js]
-                bsubvmns_js = bsubvmns_arr[:, js]
-            else:
-                bsubumns_js = bsubvmns_js = None
-
-            # wmns: cosine-like combination (safe divisors avoid 0/0 at m=n=0)
-            wmns = _np.where(m_nonzero_np,
-                             bsubumnc_js / m_nyq_f_safe,
-                             _np.where(n_nonzero_only_np,
-                                       -bsubvmnc_js / n_nyq_f_safe, 0.0))
-            if self.asym and bsubumns_js is not None and bsubvmns_js is not None:
-                # wmnc: sine-like combination (only used in asymmetric case)
-                wmnc = _np.where(m_nonzero_np,
-                                 -bsubumns_js / m_nyq_f_safe,
-                                 _np.where(n_nonzero_only_np,
-                                           bsubvmns_js / n_nyq_f_safe, 0.0))
-            else:
-                wmnc = None
-
-            bmnc_js = bmnc_arr[:, js]
-            bmns_js = bmns_arr[:, js] if bmns_arr is not None else None
+            r        = _r_all[:, js_b]
+            z        = _z_all[:, js_b]
+            lam      = _lam_all[:, js_b]
+            dlam_dth = _dlam_dth_all[:, js_b]
+            dlam_dze = _dlam_dze_all[:, js_b]
 
             # ------------------------------------------------------------------
-            # 3) Non-Nyquist R, Z, λ and derivatives — NumPy matmul
+            # 4) w, ∂w/∂θ, ∂w/∂ζ and |B| — sliced from pre-batched arrays
             # ------------------------------------------------------------------
-            this_rmnc = rmnc_arr[:, js]
-            this_zmns = zmns_arr[:, js]
-            this_lmns = lmns_arr[:, js]
-
-            if self.asym and rmns_arr is not None and zmnc_arr is not None and lmnc_arr is not None:
-                this_rmns = rmns_arr[:, js]
-                this_zmnc = zmnc_arr[:, js]
-                this_lmnc = lmnc_arr[:, js]
-            else:
-                this_rmns = this_zmnc = this_lmnc = None
-
-            r        = tcos_non_np @ this_rmnc
-            z        = tsin_non_np @ this_zmns
-            lam      = tsin_non_np @ this_lmns
-            dlam_dth = tcos_non_np @ (this_lmns * m_non_f_np)
-            dlam_dze = -(tcos_non_np @ (this_lmns * n_non_f_np))
-
-            if self.asym and this_rmns is not None:
-                r        = r        + tsin_non_np @ this_rmns
-                z        = z        + tcos_non_np @ this_zmnc
-                lam      = lam      + tcos_non_np @ this_lmnc
-                dlam_dth = dlam_dth - tsin_non_np @ (this_lmnc * m_non_f_np)
-                dlam_dze = dlam_dze + tsin_non_np @ (this_lmnc * n_non_f_np)
-
-            # ------------------------------------------------------------------
-            # 4) Nyquist w, ∂w/∂θ, ∂w/∂ζ and |B| — NumPy matmul
-            # ------------------------------------------------------------------
-            w      = tsin_nyq_np @ wmns
-            dw_dth = tcos_nyq_np @ (wmns * m_nyq_f_np)
-            dw_dze = -(tcos_nyq_np @ (wmns * n_nyq_f_np))
-            bmod   = tcos_nyq_np @ bmnc_js
-
-            if self.asym and wmnc is not None and bmns_js is not None:
-                w      = w      + tcos_nyq_np @ wmnc
-                dw_dth = dw_dth - tsin_nyq_np @ (wmnc * m_nyq_f_np)
-                dw_dze = dw_dze + tsin_nyq_np @ (wmnc * n_nyq_f_np)
-                bmod   = bmod   + tsin_nyq_np @ bmns_js
+            w      = _w_all[:, js_b]
+            dw_dth = _dw_dth_all[:, js_b]
+            dw_dze = _dw_dze_all[:, js_b]
+            bmod   = _bmod_all[:, js_b]
 
             # ------------------------------------------------------------------
             # 5) ν, Boozer angles, their derivatives, J_B, and dB/d(vmec)
@@ -1022,38 +1025,38 @@ class Booz_xform:
                 _field_list = [bmod, r, z, nu, boozer_jac]
                 for k, fk in enumerate(_field_list):
                     _fkdB = fk * _dB                    # (N,) weighted field
-                    _fcn  = _fkdB[:, None] * cosn_b     # (N, nboz+1)
-                    _fsn  = _fkdB[:, None] * sinn_b     # (N, nboz+1)
-                    _Xc = _cmT @ _fcn                   # (mboz+1, nboz+1)
-                    _Xs = _smT @ _fsn
-                    _Ysc = _smT @ _fcn
-                    _Ycs = _cmT @ _fsn
+                    _np.multiply(_fkdB[:, None], cosn_b, out=_fcn_buf)  # (N, nboz+1)
+                    _np.multiply(_fkdB[:, None], sinn_b, out=_fsn_buf)  # (N, nboz+1)
+                    _np.dot(_cmT, _fcn_buf, out=_Xc_buf)                # (mboz+1, nboz+1)
+                    _np.dot(_smT, _fsn_buf, out=_Xs_buf)
+                    _np.dot(_smT, _fcn_buf, out=_Ysc_buf)
+                    _np.dot(_cmT, _fsn_buf, out=_Ycs_buf)
                     _cos_out[k] = _ff_chunk * (
-                        _Xc[_m_b_chunk, _n_b_chunk] + _sgn_chunk * _Xs[_m_b_chunk, _n_b_chunk]
+                        _Xc_buf[_m_b_chunk, _n_b_chunk] + _sgn_chunk * _Xs_buf[_m_b_chunk, _n_b_chunk]
                     )
                     _sin_out[k] = _ff_chunk * (
-                        _Ysc[_m_b_chunk, _n_b_chunk] - _sgn_chunk * _Ycs[_m_b_chunk, _n_b_chunk]
+                        _Ysc_buf[_m_b_chunk, _n_b_chunk] - _sgn_chunk * _Ycs_buf[_m_b_chunk, _n_b_chunk]
                     )
             else:
                 # Cosine-output fields: bmod, r, jac
                 for k, fk in enumerate([bmod, r, boozer_jac]):
                     _fkdB = fk * _dB
-                    _fcn  = _fkdB[:, None] * cosn_b
-                    _fsn  = _fkdB[:, None] * sinn_b
-                    _Xc = _cmT @ _fcn
-                    _Xs = _smT @ _fsn
+                    _np.multiply(_fkdB[:, None], cosn_b, out=_fcn_buf)
+                    _np.multiply(_fkdB[:, None], sinn_b, out=_fsn_buf)
+                    _np.dot(_cmT, _fcn_buf, out=_Xc_buf)
+                    _np.dot(_smT, _fsn_buf, out=_Xs_buf)
                     _cos_out[k] = _ff_chunk * (
-                        _Xc[_m_b_chunk, _n_b_chunk] + _sgn_chunk * _Xs[_m_b_chunk, _n_b_chunk]
+                        _Xc_buf[_m_b_chunk, _n_b_chunk] + _sgn_chunk * _Xs_buf[_m_b_chunk, _n_b_chunk]
                     )
                 # Sine-output fields: z, nu
                 for k, fk in enumerate([z, nu]):
                     _fkdB = fk * _dB
-                    _fcn  = _fkdB[:, None] * cosn_b
-                    _fsn  = _fkdB[:, None] * sinn_b
-                    _Ysc = _smT @ _fcn
-                    _Ycs = _cmT @ _fsn
+                    _np.multiply(_fkdB[:, None], cosn_b, out=_fcn_buf)
+                    _np.multiply(_fkdB[:, None], sinn_b, out=_fsn_buf)
+                    _np.dot(_smT, _fcn_buf, out=_Ysc_buf)
+                    _np.dot(_cmT, _fsn_buf, out=_Ycs_buf)
                     _sin_out[k] = _ff_chunk * (
-                        _Ysc[_m_b_chunk, _n_b_chunk] - _sgn_chunk * _Ycs[_m_b_chunk, _n_b_chunk]
+                        _Ysc_buf[_m_b_chunk, _n_b_chunk] - _sgn_chunk * _Ycs_buf[_m_b_chunk, _n_b_chunk]
                     )
 
             # Write to NumPy output buffers (no .asarray needed — already host)

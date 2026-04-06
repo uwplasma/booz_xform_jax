@@ -8,6 +8,30 @@ A high-performance, JAX-based reimplementation of the classic **BOOZ\_XFORM** co
 > - a **drop-in, differentiable analogue** of the C++/Fortran BOOZ\_XFORM used by `simsopt` and related tools;
 > - a **pedagogical reference implementation** showing how the Boozer transform can be expressed in modern array-based, differentiable form.
 
+## Performance vs xbooz_xform
+
+The plots below compare `booz_xform_jax` and the reference C++ `xbooz_xform`
+on four VMEC `wout` files spanning a range of problem sizes (warm/repeated
+runs; first run includes JAX tracing overhead).
+
+<p align="center">
+  <img src="docs/comparison_runtime.png" width="860" />
+</p>
+<p align="center">
+  <img src="docs/comparison_memory.png" width="560" />
+</p>
+
+| Case | booz_xform_jax | xbooz_xform | Speedup |
+|---|---|---|---|
+| Tokamak (small, ns=16) | 0.007 s | 0.001 s | 0.2× |
+| li383 stellarator (ns=48) | 0.032 s | 0.428 s | 14× |
+| LSP stellarator (ns=99) | 0.040 s | 1.710 s | 42× |
+| HSX (large, ns=300) | 0.627 s | 89.9 s | **143×** |
+
+> The tokamak case is too small for JAX to overcome its Python overhead on
+> warm runs; for larger problems (HSX, ns=300) the batched DGEMM approach
+> outperforms the serial Fortran/C++ loop by over two orders of magnitude.
+
 ## Showcase
 
 The figures below compare `booz_xform_jax` with the original C++ `xbooz_xform`
