@@ -99,6 +99,7 @@ published BOOZ_XFORM theory and to the original implementation.
 from __future__ import annotations
 
 import math
+import os as _os
 import numpy as _np
 from functools import partial
 from dataclasses import dataclass, field
@@ -769,6 +770,22 @@ class Booz_xform:
         _fourier_factor = jnp.ones((mnboz,), dtype=jnp.float64) * _fourier_factor0
         _fourier_factor = _fourier_factor.at[0].set(_fourier_factor0 * 0.5)
 
+        # ------------------------------------------------------------------
+        # Chunk size for memory-bounded Fourier integrals.
+        # Each chunk allocates 2×(N×L)×8 bytes for tcos_c / tsin_c.
+        # Default cap: 200 MB; override via BOOZ_XFORM_JAX_CHUNK_BYTES env var.
+        # ------------------------------------------------------------------
+        _chunk_bytes = int(_os.environ.get("BOOZ_XFORM_JAX_CHUNK_BYTES",
+                                           str(200 * 1024 ** 2)))
+        _chunk_size = max(1, min(mnboz,
+                                 int(_chunk_bytes // (2 * n_theta_zeta * 8))))
+
+        # NumPy copies of constant mode arrays (convert once, reuse each surface)
+        _m_b_chunk  = _np.asarray(_m_b_np_idx)       # (mnboz,) int
+        _n_b_chunk  = _np.asarray(_abs_n_b_np)        # (mnboz,) int
+        _ff_chunk   = _np.asarray(_fourier_factor)    # (mnboz,) float
+        _sgn_chunk  = _np.asarray(_sign_b_hoisted[0]) # (mnboz,) float
+
         # NumPy copies for the verbose modbooz reconstruction
         if _verbose:
             _xm_b_np_f = _np.asarray(xm_b_j, dtype=float)
@@ -974,55 +991,79 @@ class Booz_xform:
             boozer_jac = GI / (bmod * bmod)
 
             # ------------------------------------------------------------------
-            # 7) Final Fourier integrals (all Boozer modes at once)
+            # 7) Final Fourier integrals — chunked batched-matmul
             # ------------------------------------------------------------------
-            # Use hoisted index arrays (no device→host syncs here)
-            cosm_b_m = cosm_b[:, _m_b_np_idx]      # (N, mnboz)
-            sinm_b_m = sinm_b[:, _m_b_np_idx]
-            cosn_b_n = cosn_b[:, _abs_n_b_np]
-            sinn_b_n = sinn_b[:, _abs_n_b_np]
+            # Pre-weight field quantities once per surface: O(N), no mode dim.
+            # All JAX arrays transferred to NumPy host here (one sync per surf).
+            _dB      = _np.asarray(dB_dvmec)     # (N,)
+            _bmod_np = _np.asarray(bmod)          # (N,)
+            _r_np    = _np.asarray(r)             # (N,)
+            _z_np    = _np.asarray(z)             # (N,)
+            _nu_np   = _np.asarray(nu)            # (N,)
+            _jac_np  = _np.asarray(boozer_jac)   # (N,)
 
-            # tcos / tsin as in the original code:
-            tcos_modes = cosm_b_m * cosn_b_n + sinm_b_m * sinn_b_n * _sign_b_hoisted
-            tsin_modes = sinm_b_m * cosn_b_n - cosm_b_m * sinn_b_n * _sign_b_hoisted
+            # Boozer trig tables transferred once per surface
+            _cosm_b_np = _np.asarray(cosm_b)     # (N, mboz+1)
+            _sinm_b_np = _np.asarray(sinm_b)
+            _cosn_b_np = _np.asarray(cosn_b)     # (N, nboz+1)
+            _sinn_b_np = _np.asarray(sinn_b)
 
-            # Weight including dB/d(vmec)  (fourier_factor hoisted above)
-            weight = dB_dvmec[:, None] * _fourier_factor[None, :]  # (N, mnboz)
-            tcos_w = tcos_modes * weight
-            tsin_w = tsin_modes * weight
-
-            # Integrals over all grid points for each Boozer mode:
-            #   bmnc_b ∼ ∫ tcos_w * |B|
-            #   rmnc_b ∼ ∫ tcos_w * R
-            #   zmns_b ∼ ∫ tsin_w * Z
-            #   numns_b ∼ ∫ tsin_w * ν
-            #   gmnc_b ∼ ∫ tcos_w * J_B
-            bmnc_b_js = jnp.einsum("ij,i->j", tcos_w, bmod)
-            rmnc_b_js = jnp.einsum("ij,i->j", tcos_w, r)
-            zmns_b_js = jnp.einsum("ij,i->j", tsin_w, z)
-            numns_b_js = jnp.einsum("ij,i->j", tsin_w, nu)
-            gmnc_b_js = jnp.einsum("ij,i->j", tcos_w, boozer_jac)
-
+            # Stack weighted fields: (n_fields, N)
+            # cos_fields[k] @ tcos_c → cosine Fourier integral for field k
+            # sin_fields[k] @ tsin_c → sine  Fourier integral for field k
             if self.asym:
-                bmns_b_js = jnp.einsum("ij,i->j", tsin_w, bmod)
-                rmns_b_js = jnp.einsum("ij,i->j", tsin_w, r)
-                zmnc_b_js = jnp.einsum("ij,i->j", tcos_w, z)
-                numnc_b_js = jnp.einsum("ij,i->j", tcos_w, nu)
-                gmns_b_js = jnp.einsum("ij,i->j", tsin_w, boozer_jac)
+                cos_fields = _np.stack([           # (5, N)
+                    _bmod_np * _dB, _r_np * _dB, _z_np * _dB,
+                    _nu_np * _dB, _jac_np * _dB,
+                ])
+                sin_fields = cos_fields            # same weights, different trig
+            else:
+                cos_fields = _np.stack([           # (3, N)
+                    _bmod_np * _dB, _r_np * _dB, _jac_np * _dB,
+                ])
+                sin_fields = _np.stack([           # (2, N)
+                    _z_np * _dB, _nu_np * _dB,
+                ])
 
-            # Transfer to NumPy output buffers (host side)
-            bmnc_b[:, js_b] = _np.asarray(bmnc_b_js)
-            rmnc_b[:, js_b] = _np.asarray(rmnc_b_js)
-            zmns_b[:, js_b] = _np.asarray(zmns_b_js)
-            numns_b[:, js_b] = _np.asarray(numns_b_js)
-            gmnc_b[:, js_b] = _np.asarray(gmnc_b_js)
+            _cos_out = _np.zeros((cos_fields.shape[0], mnboz), dtype=float)
+            _sin_out = _np.zeros((sin_fields.shape[0], mnboz), dtype=float)
 
+            for _c0 in range(0, mnboz, _chunk_size):
+                _sl   = slice(_c0, min(_c0 + _chunk_size, mnboz))
+                _cm   = _m_b_chunk[_sl]            # (L,) mode-m indices
+                _cn   = _n_b_chunk[_sl]            # (L,) mode-|n| indices
+                _csgn = _sgn_chunk[_sl]            # (L,) sign of n
+                _cff  = _ff_chunk[_sl]             # (L,) Fourier factor
+
+                _cosm_c = _cosm_b_np[:, _cm]       # (N, L)
+                _sinm_c = _sinm_b_np[:, _cm]
+                _cosn_c = _cosn_b_np[:, _cn]
+                _sinn_c = _sinn_b_np[:, _cn]
+
+                # Boozer trig: cos(m*u_B ∓ |n|*nfp*v_B)  (same as original)
+                _tcos_c = _cosm_c * _cosn_c + _sinm_c * _sinn_c * _csgn  # (N, L)
+                _tsin_c = _sinm_c * _cosn_c - _cosm_c * _sinn_c * _csgn  # (N, L)
+
+                # Batched matmul: (n_fields, N) @ (N, L) → (n_fields, L)
+                _cos_out[:, _sl] = (cos_fields @ _tcos_c) * _cff
+                _sin_out[:, _sl] = (sin_fields @ _tsin_c) * _cff
+
+            # Write to NumPy output buffers (no .asarray needed — already host)
+            bmnc_b[:, js_b] = _cos_out[0]
+            rmnc_b[:, js_b] = _cos_out[1]
             if self.asym:
-                bmns_b[:, js_b] = _np.asarray(bmns_b_js)
-                rmns_b[:, js_b] = _np.asarray(rmns_b_js)
-                zmnc_b[:, js_b] = _np.asarray(zmnc_b_js)
-                numnc_b[:, js_b] = _np.asarray(numnc_b_js)
-                gmns_b[:, js_b] = _np.asarray(gmns_b_js)
+                zmnc_b[:, js_b]  = _cos_out[2]
+                numnc_b[:, js_b] = _cos_out[3]
+                gmnc_b[:, js_b]  = _cos_out[4]
+                bmns_b[:, js_b]  = _sin_out[0]
+                rmns_b[:, js_b]  = _sin_out[1]
+                zmns_b[:, js_b]  = _sin_out[2]
+                numns_b[:, js_b] = _sin_out[3]
+                gmns_b[:, js_b]  = _sin_out[4]
+            else:
+                gmnc_b[:, js_b]  = _cos_out[2]
+                zmns_b[:, js_b]  = _sin_out[0]
+                numns_b[:, js_b] = _sin_out[1]
 
             # Fortran-style accuracy check: reconstruct |B| at 4 fixed
             # Boozer-angle points and compare with VMEC real-space |B|.
@@ -1032,24 +1073,22 @@ class Booz_xform:
 
                 # Vectorised modbooz: u_b/v_b are (4,), _xm_b_np_f/_xn_b_np_f (mnboz,)
                 # -> angles (4, mnboz), then sum over modes
-                u_b_arr = _np.array(u_b)   # (4,)
-                v_b_arr = _np.array(v_b)   # (4,)
+                u_b_arr = _np.array(u_b)    # (4,)
+                v_b_arr = _np.array(v_b)    # (4,)
                 sgn_arr = _np.where(_xn_b_np_f >= 0, 1.0, -1.0)  # (mnboz,)
                 n_abs_arr = _np.abs(_xn_b_np_f) / self.nfp        # (mnboz,)
 
-                cosm_4 = _np.cos(_xm_b_np_f[None, :] * u_b_arr[:, None])   # (4, mnboz)
+                cosm_4 = _np.cos(_xm_b_np_f[None, :] * u_b_arr[:, None])            # (4, mnboz)
                 sinm_4 = _np.sin(_xm_b_np_f[None, :] * u_b_arr[:, None])
                 cosn_4 = _np.cos(n_abs_arr[None, :] * v_b_arr[:, None] * self.nfp)
                 sinn_4 = _np.sin(n_abs_arr[None, :] * v_b_arr[:, None] * self.nfp)
 
-                cost_4 = cosm_4 * cosn_4 + sinm_4 * sinn_4 * sgn_arr[None, :]  # (4, mnboz)
-                bmnc_np = _np.asarray(bmnc_b_js)
-                bmodb_arr = cost_4 @ bmnc_np  # (4,)
+                cost_4 = cosm_4 * cosn_4 + sinm_4 * sinn_4 * sgn_arr[None, :]       # (4, mnboz)
+                bmodb_arr = cost_4 @ bmnc_b[:, js_b]                                  # already numpy
 
                 if self.asym:
                     sint_4 = sinm_4 * cosn_4 - cosm_4 * sinn_4 * sgn_arr[None, :]
-                    bmods_arr = sint_4 @ _np.asarray(bmns_b_js)
-                    bmodb_arr = bmodb_arr + bmods_arr
+                    bmodb_arr = bmodb_arr + sint_4 @ bmns_b[:, js_b]
 
                 bmodv_arr = _np.array(bmodv)
                 err_arr = _np.abs(bmodb_arr - bmodv_arr) / _np.maximum(
