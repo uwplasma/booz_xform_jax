@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,29 +7,40 @@ name = "booz_xform_jax"
 version = "0.1.0"
 description = "Pure Python JAX implementation of the Boozer coordinate transformation"
 readme = "README.md"
-authors = [
-  { name = "Hidden Symmetries Development Team", email = "dev@example.com" }
-]
-license = { text = "MIT" }
+authors = [{ name = "UWPlasma contributors" }]
+license = "MIT"
 dependencies = [
-  # JAX and its runtime
   "jax",
   "jaxlib",
-  # Base numerical dependency
-  "numpy >= 1.20",
-  # NetCDF support for reading and writing boozmn files
-  "netCDF4 >= 1.5.0",
-  # SciPy provides a fallback NetCDF3 writer
-  "scipy >= 1.7",
-  # Matplotlib and Plotly are required for plotting utilities
-  "matplotlib >= 3.5",
-  "plotly >= 5.6",
+  "numpy",
+  "netCDF4",
+  "scipy",
+  "matplotlib",
+  "plotly",
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.10"
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Physics",
+]
+keywords = ["boozer coordinates", "jax", "plasma physics", "stellarator", "vmec"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+docs = ["sphinx", "sphinx-rtd-theme"]
+dev = ["build", "pytest", "sphinx", "sphinx-rtd-theme"]
 
 [project.urls]
-Homepage = "https://github.com/hiddenSymmetries/booz_xform"
-Repository = "https://github.com/hiddenSymmetries/booz_xform"
+Homepage = "https://github.com/uwplasma/booz_xform_jax"
+Repository = "https://github.com/uwplasma/booz_xform_jax"
+Documentation = "https://github.com/uwplasma/booz_xform_jax/tree/main/docs"
+Issues = "https://github.com/uwplasma/booz_xform_jax/issues"
 
 [project.scripts]
 booz_xform_jax = "booz_xform_jax.cli:main"
