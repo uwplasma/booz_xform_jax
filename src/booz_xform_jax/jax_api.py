@@ -505,6 +505,7 @@ def booz_xform_jax_impl(
         "rmnc_b": rmnc_b,
         "zmns_b": zmns_b,
         "pmns_b": -numns_b,
+        "gmnc_b": gmnc_b,
         "bmnc_b": bmnc_b,
         "jlist": jlist,
     }

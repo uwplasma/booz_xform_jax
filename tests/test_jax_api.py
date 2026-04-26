@@ -72,6 +72,12 @@ def test_jax_api_matches_reference_small():
         rtol=5e-6,
         atol=1e-8,
     )
+    np.testing.assert_allclose(
+        np.asarray(out["gmnc_b"])[0],
+        np.asarray(b.gmnc_b)[:, 0],
+        rtol=5e-6,
+        atol=1e-8,
+    )
 
 
 def test_run_jax_matches_run():
@@ -87,6 +93,12 @@ def test_run_jax_matches_run():
     np.testing.assert_allclose(
         np.asarray(out["bmnc_b"])[0],
         np.asarray(b.bmnc_b)[:, 0],
+        rtol=5e-6,
+        atol=1e-8,
+    )
+    np.testing.assert_allclose(
+        np.asarray(out["gmnc_b"])[0],
+        np.asarray(b.gmnc_b)[:, 0],
         rtol=5e-6,
         atol=1e-8,
     )
@@ -167,6 +179,12 @@ def test_streamed_fourier_matches_vectorized():
     np.testing.assert_allclose(
         np.asarray(out_vec["zmns_b"]),
         np.asarray(out_stream["zmns_b"]),
+        rtol=5e-6,
+        atol=1e-8,
+    )
+    np.testing.assert_allclose(
+        np.asarray(out_vec["gmnc_b"]),
+        np.asarray(out_stream["gmnc_b"]),
         rtol=5e-6,
         atol=1e-8,
     )
