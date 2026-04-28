@@ -44,7 +44,8 @@ Two Fourier-accumulation modes are supported:
 
 The mode can be selected by setting the environment variable
 ``BOOZ_XFORM_JAX_FOURIER_MODE=streamed`` before calling the transform. The test
-suite checks that both modes agree on bundled cases.
+suite checks that both modes agree on bundled symmetric and asymmetric cases,
+including the Jacobian harmonics.
 
 JIT Compilation And Differentiation
 -----------------------------------
@@ -57,6 +58,11 @@ close to the original object-oriented interface. The lower-level
 - integration into larger differentiable pipelines,
 - surface-major batched transforms,
 - reuse of precomputed static constants and grids.
+
+The differentiable path uses finite, masked denominators when forming the
+auxiliary ``w`` spectrum from covariant field components. This preserves the
+BOOZ_XFORM ``m=n=0`` convention while keeping gradients finite through
+``bsubumnc`` and related spectra.
 
 This split keeps the legacy interface readable while preserving a fully JAX
 native path for advanced workflows.

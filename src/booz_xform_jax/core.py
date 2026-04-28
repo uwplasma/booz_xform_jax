@@ -98,12 +98,9 @@ published BOOZ_XFORM theory and to the original implementation.
 
 from __future__ import annotations
 
-import math
-import os as _os
 import numpy as _np
-from functools import partial
 from dataclasses import dataclass, field
-from typing import Iterable, List, Optional, Sequence
+from typing import Iterable, List, Optional
 
 try:
     import jax
@@ -124,7 +121,7 @@ except ImportError as e:  # pragma: no cover
 from .vmec import init_from_vmec, read_wout, read_wout_data
 from .io_utils import write_boozmn, read_boozmn
 from .jax_api import booz_xform_jax_impl, prepare_booz_xform_constants
-from .trig import _init_trig, _init_trig_np, _init_trig_np_T
+from .trig import _init_trig, _init_trig_np
 
 
 # -----------------------------------------------------------------------------
@@ -640,7 +637,6 @@ class Booz_xform:
             )
             print()
 
-        n_theta_zeta = self._n_theta_zeta
         theta_grid = self._theta_grid
         zeta_grid = self._zeta_grid
 
@@ -1140,6 +1136,9 @@ class Booz_xform:
         """Run a JAX-native Boozer transform (no Python surface loop).
 
         This method returns a mapping compatible with boozmn field names.
+        The mapping includes ``gmnc_b`` and its BOOZ_XFORM-compatible ``gmn_b``
+        alias for Boozer Jacobian harmonics, plus asymmetric spectra when
+        ``asym`` is true.
         It is intended for end-to-end JIT/differentiable workflows and
         does not populate the instance attributes (unlike `run`).
         """
@@ -1187,6 +1186,9 @@ class Booz_xform:
         bsubvmnc = jnp.asarray(_np.asarray(self.bsubvmnc)).T
         iota = jnp.asarray(_np.asarray(self.iota))
 
+        rmns = jnp.asarray(_np.asarray(self.rmns)).T if self.asym and self.rmns is not None else None
+        zmnc = jnp.asarray(_np.asarray(self.zmnc)).T if self.asym and self.zmnc is not None else None
+        lmnc = jnp.asarray(_np.asarray(self.lmnc)).T if self.asym and self.lmnc is not None else None
         bmns = jnp.asarray(_np.asarray(self.bmns)).T if self.asym and self.bmns is not None else None
         bsubumns = (
             jnp.asarray(_np.asarray(self.bsubumns)).T if self.asym and self.bsubumns is not None else None
@@ -1215,6 +1217,9 @@ class Booz_xform:
             xn_nyq=jnp.asarray(self.xn_nyq, dtype=jnp.int32),
             constants=constants,
             grids=grids,
+            rmns=rmns,
+            zmnc=zmnc,
+            lmnc=lmnc,
             bmns=bmns,
             bsubumns=bsubumns,
             bsubvmns=bsubvmns,

@@ -128,6 +128,14 @@ For end-to-end JAX pipelines, use :mod:`booz_xform_jax.jax_api`:
        surface_indices=jnp.asarray(bx.compute_surfs),
    )
 
+The returned dictionary includes Boozer spectra such as ``bmnc_b``,
+``rmnc_b``, ``zmns_b``, ``numns_b``, ``pmns_b``, and the Jacobian harmonics
+``gmnc_b``. For compatibility with BOOZ_XFORM ``boozmn`` files, ``gmn_b`` is
+also provided as an alias of ``gmnc_b``. For asymmetric equilibria, pass
+``rmns``, ``zmnc``, ``lmnc``, ``bmns``, ``bsubumns``, and ``bsubvmns`` to get
+the corresponding sine/cosine spectra such as ``bmns_b``, ``rmns_b``,
+``zmnc_b``, ``pmnc_b``, and ``gmns_b``.
+
 Examples
 --------
 
@@ -137,6 +145,8 @@ The repository ships several example scripts:
 - ``examples/example_li383_jax_api_fast.py``: low-level JAX API with JIT.
 - ``examples/example_li383_autodiff_opt.py``: differentiable optimization toy
   example.
+- ``examples/example_li383_jacobian_sensitivity.py``: matrix-free gradients,
+  JVPs, and VJPs for ``gmnc_b`` Jacobian harmonics.
 - ``examples/example_vmec_jax_pipeline.py``: in-memory VMEC-to-Boozer pipeline.
 - ``examples/example_li383_wireframe.py``: wireframe-style visualization.
 - ``examples/example_li383_resolution_scan.py``: transform-resolution studies.

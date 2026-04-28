@@ -26,6 +26,10 @@ The repository includes several ready-to-run examples.
   Shows how Boozer diagnostics can be embedded in a differentiable optimization
   loop.
 
+``examples/example_li383_jacobian_sensitivity.py``
+  Demonstrates matrix-free sensitivities of ``gmnc_b`` Jacobian harmonics using
+  ``jax.value_and_grad``, ``jax.jvp``, and ``jax.vjp``.
+
 ``examples/example_vmec_jax_pipeline.py``
   Demonstrates an in-memory pipeline from ``vmec_jax`` output to
   ``booz_xform_jax`` without writing intermediate files.

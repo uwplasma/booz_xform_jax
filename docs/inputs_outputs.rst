@@ -124,7 +124,8 @@ variables include:
    * - Variable
      - Notes
    * - ``jlist``
-     - Full-grid surface indices written in the legacy 1-based convention.
+     - Full-grid surface indices written in the legacy 1-based convention
+       ``compute_surfs + 2``.
    * - ``ixm_b``, ``ixn_b``
      - Boozer mode lists.
    * - ``iota_b``
@@ -137,6 +138,11 @@ variables include:
      - Legacy storage for :math:`p = -\nu`, so ``pmns_b = -numns_b``.
    * - ``bmns_b``, ``rmns_b``, ``zmnc_b``, ``gmns_b``, ``pmnc_b``
      - Additional asymmetric spectra when ``lasym`` is true.
+
+The JAX-native output dictionary follows the same names where possible. It
+returns surface-major arrays, includes the true ``numns_b`` and ``numnc_b``
+shift coefficients, and also includes the BOOZ_XFORM storage variables
+``pmns_b = -numns_b`` and ``pmnc_b = -numnc_b``.
 
 Compatibility Notes
 -------------------
