@@ -142,6 +142,8 @@ The repository ships several example scripts:
 - ``examples/example_li383_jax_api_fast.py``: low-level JAX API with JIT.
 - ``examples/example_li383_autodiff_opt.py``: differentiable optimization toy
   example.
+- ``examples/example_li383_jacobian_sensitivity.py``: matrix-free gradients,
+  JVPs, and VJPs for ``gmnc_b`` Jacobian harmonics.
 - ``examples/example_vmec_jax_pipeline.py``: in-memory VMEC-to-Boozer pipeline.
 - ``examples/example_li383_wireframe.py``: wireframe-style visualization.
 - ``examples/example_li383_resolution_scan.py``: transform-resolution studies.
