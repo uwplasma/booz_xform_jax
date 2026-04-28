@@ -98,12 +98,9 @@ published BOOZ_XFORM theory and to the original implementation.
 
 from __future__ import annotations
 
-import math
-import os as _os
 import numpy as _np
-from functools import partial
 from dataclasses import dataclass, field
-from typing import Iterable, List, Optional, Sequence
+from typing import Iterable, List, Optional
 
 try:
     import jax
@@ -124,7 +121,7 @@ except ImportError as e:  # pragma: no cover
 from .vmec import init_from_vmec, read_wout, read_wout_data
 from .io_utils import write_boozmn, read_boozmn
 from .jax_api import booz_xform_jax_impl, prepare_booz_xform_constants
-from .trig import _init_trig, _init_trig_np, _init_trig_np_T
+from .trig import _init_trig, _init_trig_np
 
 
 # -----------------------------------------------------------------------------
@@ -640,7 +637,6 @@ class Booz_xform:
             )
             print()
 
-        n_theta_zeta = self._n_theta_zeta
         theta_grid = self._theta_grid
         zeta_grid = self._zeta_grid
 
