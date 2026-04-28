@@ -1141,7 +1141,8 @@ class Booz_xform:
 
         This method returns a mapping compatible with boozmn field names.
         The mapping includes ``gmnc_b`` and its BOOZ_XFORM-compatible ``gmn_b``
-        alias for Boozer Jacobian harmonics.
+        alias for Boozer Jacobian harmonics, plus asymmetric spectra when
+        ``asym`` is true.
         It is intended for end-to-end JIT/differentiable workflows and
         does not populate the instance attributes (unlike `run`).
         """
@@ -1189,6 +1190,9 @@ class Booz_xform:
         bsubvmnc = jnp.asarray(_np.asarray(self.bsubvmnc)).T
         iota = jnp.asarray(_np.asarray(self.iota))
 
+        rmns = jnp.asarray(_np.asarray(self.rmns)).T if self.asym and self.rmns is not None else None
+        zmnc = jnp.asarray(_np.asarray(self.zmnc)).T if self.asym and self.zmnc is not None else None
+        lmnc = jnp.asarray(_np.asarray(self.lmnc)).T if self.asym and self.lmnc is not None else None
         bmns = jnp.asarray(_np.asarray(self.bmns)).T if self.asym and self.bmns is not None else None
         bsubumns = (
             jnp.asarray(_np.asarray(self.bsubumns)).T if self.asym and self.bsubumns is not None else None
@@ -1217,6 +1221,9 @@ class Booz_xform:
             xn_nyq=jnp.asarray(self.xn_nyq, dtype=jnp.int32),
             constants=constants,
             grids=grids,
+            rmns=rmns,
+            zmnc=zmnc,
+            lmnc=lmnc,
             bmns=bmns,
             bsubumns=bsubumns,
             bsubvmns=bsubvmns,

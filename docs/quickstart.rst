@@ -129,9 +129,12 @@ For end-to-end JAX pipelines, use :mod:`booz_xform_jax.jax_api`:
    )
 
 The returned dictionary includes Boozer spectra such as ``bmnc_b``,
-``rmnc_b``, ``zmns_b``, ``pmns_b``, and the Jacobian harmonics ``gmnc_b``.
-For compatibility with BOOZ_XFORM ``boozmn`` files, ``gmn_b`` is also provided
-as an alias of ``gmnc_b``.
+``rmnc_b``, ``zmns_b``, ``numns_b``, ``pmns_b``, and the Jacobian harmonics
+``gmnc_b``. For compatibility with BOOZ_XFORM ``boozmn`` files, ``gmn_b`` is
+also provided as an alias of ``gmnc_b``. For asymmetric equilibria, pass
+``rmns``, ``zmnc``, ``lmnc``, ``bmns``, ``bsubumns``, and ``bsubvmns`` to get
+the corresponding sine/cosine spectra such as ``bmns_b``, ``rmns_b``,
+``zmnc_b``, ``pmnc_b``, and ``gmns_b``.
 
 Examples
 --------

@@ -14,6 +14,7 @@ surface-major arrays with shape ``(ns_selected, mnboz)`` for Boozer spectra and
 keeps BOOZ_XFORM-compatible variable names. The key Jacobian output is:
 
 - ``gmnc_b``: cosine harmonics of the Boozer Jacobian-related quantity.
+- ``gmns_b``: sine harmonics of the same quantity when ``lasym`` is true.
 - ``gmn_b``: compatibility alias matching the BOOZ_XFORM/netCDF variable name.
 
 Physics Contract
@@ -83,11 +84,13 @@ Milestones
    - finite-gradient tests through representative scalar objectives,
    - NetCDF name compatibility checks for ``gmn_b``.
 
-6. Future asymmetric-output expansion
-   The JAX path currently propagates asymmetric VMEC inputs through the
-   symmetric-output spectra used by the present tests. A later milestone should
-   expose full asymmetric output arrays such as ``bmns_b``, ``rmns_b``,
-   ``zmnc_b``, ``pmnc_b``, and ``gmns_b`` when ``lasym`` is true.
+6. Full asymmetric-output expansion
+   The JAX path accepts asymmetric VMEC inputs ``rmns``, ``zmnc``, ``lmnc``,
+   ``bmns``, ``bsubumns``, and ``bsubvmns``. When ``lasym`` is true it exposes
+   ``bmns_b``, ``rmns_b``, ``zmnc_b``, ``numnc_b``, ``pmnc_b``, and ``gmns_b``
+   in addition to the symmetric spectra. The validation suite compares these
+   arrays against the bundled asymmetric BOOZ_XFORM reference file and checks
+   vectorized, streamed, JIT, and autodiff paths.
 
 Downstream FAX Contract
 -----------------------
@@ -98,10 +101,12 @@ without relying on object attributes. The minimum stable keys are:
 - ``ixm_b`` and ``ixn_b`` for Boozer mode numbers,
 - ``iota_b``, ``buco_b``, and ``bvco_b`` for flux functions,
 - ``bmnc_b`` for :math:`|B|`,
-- ``rmnc_b`` and ``zmns_b`` for geometry,
-- ``pmns_b`` for the legacy stored toroidal-angle shift,
-- ``gmnc_b`` or ``gmn_b`` for Jacobian harmonics,
-- ``jlist`` for selected 1-based full-grid surface indices.
+- ``rmnc_b`` and ``zmns_b`` for stellarator-symmetric geometry,
+- ``bmns_b``, ``rmns_b``, and ``zmnc_b`` when asymmetric spectra are present,
+- ``pmns_b`` and ``pmnc_b`` for the legacy stored toroidal-angle shift,
+- ``gmnc_b`` or ``gmn_b`` plus ``gmns_b`` for Jacobian harmonics,
+- ``jlist`` for selected 1-based full-grid surface indices, using the
+  BOOZ_XFORM full-grid convention ``compute_surfs + 2``.
 
 The shape convention is intentionally surface-major in JAX outputs. Writers and
 legacy BOOZ_XFORM files may transpose this layout for file compatibility.
@@ -119,6 +124,8 @@ Implementation Notes
   with reverse-mode gradients or matrix-free JVP/VJP products.
 - Keep tests physics based: compare spectral coefficients and transformation
   identities, not only array shapes.
+- Guard differentiable divisions in the auxiliary ``w`` spectrum with safe
+  denominators at ``m=n=0`` so covariance-field gradients remain finite.
 
 References
 ----------

@@ -163,7 +163,10 @@ def prepare_booz_xform_constants_from_inputs(
 
 def _surface_transform(
     rmnc: jnp.ndarray,
+    rmns: jnp.ndarray,
+    zmnc: jnp.ndarray,
     zmns: jnp.ndarray,
+    lmnc: jnp.ndarray,
     lmns: jnp.ndarray,
     bmnc: jnp.ndarray,
     bsubumnc: jnp.ndarray,
@@ -190,7 +193,7 @@ def _surface_transform(
     bsubvmns: Optional[jnp.ndarray] = None,
     fourier_mode: str = "vectorized",
     trig_f32: bool = False,
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+) -> Tuple[jnp.ndarray, ...]:
     """Compute Boozer spectra for a single surface."""
     nfp = constants.nfp
     theta_grid = grids.theta_grid
@@ -201,19 +204,22 @@ def _surface_transform(
     Boozer_I = bsubumnc[idx00]
     Boozer_G = bsubvmnc[idx00]
 
-    # w spectrum from B_theta and B_zeta
+    # w spectrum from B_theta and B_zeta. Safe denominators avoid inf/NaN
+    # tangents at m=n=0 when this kernel is differentiated.
     m_nonzero = m_nyq_f != 0.0
     n_nonzero_only = jnp.logical_and(~m_nonzero, n_nyq_f != 0.0)
+    m_nyq_safe = jnp.where(m_nonzero, m_nyq_f, 1.0)
+    n_nyq_safe = jnp.where(n_nonzero_only, n_nyq_f, 1.0)
     wmns = jnp.where(
         m_nonzero,
-        bsubumnc / m_nyq_f,
-        jnp.where(n_nonzero_only, -bsubvmnc / n_nyq_f, 0.0),
+        bsubumnc / m_nyq_safe,
+        jnp.where(n_nonzero_only, -bsubvmnc / n_nyq_safe, 0.0),
     )
     if constants.asym and bsubumns is not None and bsubvmns is not None:
         wmnc = jnp.where(
             m_nonzero,
-            -bsubumns / m_nyq_f,
-            jnp.where(n_nonzero_only, bsubvmns / n_nyq_f, 0.0),
+            -bsubumns / m_nyq_safe,
+            jnp.where(n_nonzero_only, bsubvmns / n_nyq_safe, 0.0),
         )
     else:
         wmnc = None
@@ -224,6 +230,13 @@ def _surface_transform(
     lam = jnp.einsum("ij,j->i", tsin_non, lmns)
     dlam_dth = jnp.einsum("ij,j->i", tcos_non, lmns * m_non_f)
     dlam_dze = -jnp.einsum("ij,j->i", tcos_non, lmns * n_non_f)
+
+    if constants.asym:
+        r = r + jnp.einsum("ij,j->i", tsin_non, rmns)
+        z = z + jnp.einsum("ij,j->i", tcos_non, zmnc)
+        lam = lam + jnp.einsum("ij,j->i", tcos_non, lmnc)
+        dlam_dth = dlam_dth - jnp.einsum("ij,j->i", tsin_non, lmnc * m_non_f)
+        dlam_dze = dlam_dze + jnp.einsum("ij,j->i", tsin_non, lmnc * n_non_f)
 
     # Nyquist w, derivatives, and |B|
     w = jnp.einsum("ij,j->i", tsin_nyq, wmns)
@@ -286,10 +299,21 @@ def _surface_transform(
 
         def init_out():
             zeros = jnp.zeros((m_b_f.shape[0],), dtype=base_b.dtype)
-            return zeros, zeros, zeros, zeros, zeros
+            return zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros
 
         def body(k, state):
-            bmnc_b, rmnc_b, zmns_b, numns_b, gmnc_b = state
+            (
+                bmnc_b,
+                bmns_b,
+                rmnc_b,
+                rmns_b,
+                zmnc_b,
+                zmns_b,
+                numnc_b,
+                numns_b,
+                gmnc_b,
+                gmns_b,
+            ) = state
             m_idx = m_b_f[k]
             n_idx = abs_n_b_f[k]
             sign = sign_b_f[k]
@@ -308,9 +332,37 @@ def _surface_transform(
             zmns_b = zmns_b.at[k].set(ff * jnp.sum(tsin * base_z))
             numns_b = numns_b.at[k].set(ff * jnp.sum(tsin * base_nu))
             gmnc_b = gmnc_b.at[k].set(ff * jnp.sum(tcos * base_g))
-            return bmnc_b, rmnc_b, zmns_b, numns_b, gmnc_b
+            if constants.asym:
+                bmns_b = bmns_b.at[k].set(ff * jnp.sum(tsin * base_b))
+                rmns_b = rmns_b.at[k].set(ff * jnp.sum(tsin * base_r))
+                zmnc_b = zmnc_b.at[k].set(ff * jnp.sum(tcos * base_z))
+                numnc_b = numnc_b.at[k].set(ff * jnp.sum(tcos * base_nu))
+                gmns_b = gmns_b.at[k].set(ff * jnp.sum(tsin * base_g))
+            return (
+                bmnc_b,
+                bmns_b,
+                rmnc_b,
+                rmns_b,
+                zmnc_b,
+                zmns_b,
+                numnc_b,
+                numns_b,
+                gmnc_b,
+                gmns_b,
+            )
 
-        bmnc_b, rmnc_b, zmns_b, numns_b, gmnc_b = jax.lax.fori_loop(
+        (
+            bmnc_b,
+            bmns_b,
+            rmnc_b,
+            rmns_b,
+            zmnc_b,
+            zmns_b,
+            numnc_b,
+            numns_b,
+            gmnc_b,
+            gmns_b,
+        ) = jax.lax.fori_loop(
             0, m_b_f.shape[0], body, init_out()
         )
     else:
@@ -328,13 +380,45 @@ def _surface_transform(
         base_nu = nu * dB_dvmec
         base_g = boozer_jac * dB_dvmec
 
-        bmnc_b = fourier_factor * jnp.einsum("ij,i->j", tcos_modes, base_b)
-        rmnc_b = fourier_factor * jnp.einsum("ij,i->j", tcos_modes, base_r)
-        zmns_b = fourier_factor * jnp.einsum("ij,i->j", tsin_modes, base_z)
-        numns_b = fourier_factor * jnp.einsum("ij,i->j", tsin_modes, base_nu)
-        gmnc_b = fourier_factor * jnp.einsum("ij,i->j", tcos_modes, base_g)
+        def project_cos(field: jnp.ndarray) -> jnp.ndarray:
+            return fourier_factor * jnp.einsum("ij,i->j", tcos_modes, field)
 
-    return bmnc_b, rmnc_b, zmns_b, numns_b, gmnc_b, Boozer_I, Boozer_G
+        def project_sin(field: jnp.ndarray) -> jnp.ndarray:
+            return fourier_factor * jnp.einsum("ij,i->j", tsin_modes, field)
+
+        bmnc_b = project_cos(base_b)
+        rmnc_b = project_cos(base_r)
+        zmns_b = project_sin(base_z)
+        numns_b = project_sin(base_nu)
+        gmnc_b = project_cos(base_g)
+        zeros = jnp.zeros_like(bmnc_b)
+        if constants.asym:
+            bmns_b = project_sin(base_b)
+            rmns_b = project_sin(base_r)
+            zmnc_b = project_cos(base_z)
+            numnc_b = project_cos(base_nu)
+            gmns_b = project_sin(base_g)
+        else:
+            bmns_b = zeros
+            rmns_b = zeros
+            zmnc_b = zeros
+            numnc_b = zeros
+            gmns_b = zeros
+
+    return (
+        bmnc_b,
+        bmns_b,
+        rmnc_b,
+        rmns_b,
+        zmnc_b,
+        zmns_b,
+        numnc_b,
+        numns_b,
+        gmnc_b,
+        gmns_b,
+        Boozer_I,
+        Boozer_G,
+    )
 
 
 def booz_xform_jax_impl(
@@ -352,6 +436,9 @@ def booz_xform_jax_impl(
     xn_nyq: jnp.ndarray,
     constants: BoozXformConstants,
     grids: BoozXformGrids,
+    rmns: Optional[jnp.ndarray] = None,
+    zmnc: Optional[jnp.ndarray] = None,
+    lmnc: Optional[jnp.ndarray] = None,
     bmns: Optional[jnp.ndarray] = None,
     bsubumns: Optional[jnp.ndarray] = None,
     bsubvmns: Optional[jnp.ndarray] = None,
@@ -371,6 +458,12 @@ def booz_xform_jax_impl(
         bsubumnc = jnp.take(bsubumnc, surface_indices, axis=0)
         bsubvmnc = jnp.take(bsubvmnc, surface_indices, axis=0)
         iota = jnp.take(iota, surface_indices, axis=0)
+        if rmns is not None:
+            rmns = jnp.take(rmns, surface_indices, axis=0)
+        if zmnc is not None:
+            zmnc = jnp.take(zmnc, surface_indices, axis=0)
+        if lmnc is not None:
+            lmnc = jnp.take(lmnc, surface_indices, axis=0)
         if bmns is not None:
             bmns = jnp.take(bmns, surface_indices, axis=0)
         if bsubumns is not None:
@@ -437,11 +530,26 @@ def booz_xform_jax_impl(
     sign_b = jnp.where(grids.xn_b < 0, -1.0, 1.0)[None, :]
 
     def _surf(
-        _rmnc, _zmns, _lmns, _bmnc, _bsubumnc, _bsubvmnc, _iota, _bmns, _bsubumns, _bsubvmns
+        _rmnc,
+        _rmns,
+        _zmnc,
+        _zmns,
+        _lmnc,
+        _lmns,
+        _bmnc,
+        _bsubumnc,
+        _bsubvmnc,
+        _iota,
+        _bmns,
+        _bsubumns,
+        _bsubvmns,
     ):
         return _surface_transform(
             _rmnc,
+            _rmns,
+            _zmnc,
             _zmns,
+            _lmnc,
             _lmns,
             _bmnc,
             _bsubumnc,
@@ -471,13 +579,32 @@ def booz_xform_jax_impl(
 
     vmap_fn = jax.vmap(_surf)
 
+    rmns_in = rmns if rmns is not None else jnp.zeros_like(rmnc)
+    zmnc_in = zmnc if zmnc is not None else jnp.zeros_like(zmns)
+    lmnc_in = lmnc if lmnc is not None else jnp.zeros_like(lmns)
     bmns_in = bmns if bmns is not None else jnp.zeros_like(bmnc)
     bsubumns_in = bsubumns if bsubumns is not None else jnp.zeros_like(bsubumnc)
     bsubvmns_in = bsubvmns if bsubvmns is not None else jnp.zeros_like(bsubvmnc)
 
-    bmnc_b, rmnc_b, zmns_b, numns_b, gmnc_b, Boozer_I, Boozer_G = vmap_fn(
+    (
+        bmnc_b,
+        bmns_b,
+        rmnc_b,
+        rmns_b,
+        zmnc_b,
+        zmns_b,
+        numnc_b,
+        numns_b,
+        gmnc_b,
+        gmns_b,
+        Boozer_I,
+        Boozer_G,
+    ) = vmap_fn(
         rmnc,
+        rmns_in,
+        zmnc_in,
         zmns,
+        lmnc_in,
         lmns,
         bmnc,
         bsubumnc,
@@ -490,9 +617,9 @@ def booz_xform_jax_impl(
 
     ns_b = bmnc_b.shape[0]
     if surface_indices is None:
-        jlist = jnp.arange(1, ns_b + 1)
+        jlist = jnp.arange(2, ns_b + 2)
     else:
-        jlist = surface_indices + 1
+        jlist = surface_indices + 2
 
     return {
         "nfp_b": jnp.asarray(constants.nfp),
@@ -503,10 +630,17 @@ def booz_xform_jax_impl(
         "buco_b": Boozer_I,
         "bvco_b": Boozer_G,
         "rmnc_b": rmnc_b,
+        "rmns_b": rmns_b,
+        "zmnc_b": zmnc_b,
         "zmns_b": zmns_b,
+        "numnc_b": numnc_b,
+        "numns_b": numns_b,
+        "pmnc_b": -numnc_b,
         "pmns_b": -numns_b,
         "bmnc_b": bmnc_b,
+        "bmns_b": bmns_b,
         "gmnc_b": gmnc_b,
+        "gmns_b": gmns_b,
         # BOOZ_XFORM/netCDF-compatible spelling for the Jacobian harmonics.
         "gmn_b": gmnc_b,
         "jlist": jlist,
@@ -539,9 +673,12 @@ def booz_xform_from_inputs(
         xn_nyq=inputs.xn_nyq,
         constants=constants,
         grids=grids,
-        bmns=inputs.bmns,
-        bsubumns=inputs.bsubumns,
-        bsubvmns=inputs.bsubvmns,
+        rmns=getattr(inputs, "rmns", None),
+        zmnc=getattr(inputs, "zmnc", None),
+        lmnc=getattr(inputs, "lmnc", None),
+        bmns=getattr(inputs, "bmns", None),
+        bsubumns=getattr(inputs, "bsubumns", None),
+        bsubvmns=getattr(inputs, "bsubvmns", None),
         surface_indices=surface_indices,
     )
 
@@ -563,6 +700,9 @@ def booz_xform_jax(
     mboz: int,
     nboz: int,
     asym: bool = False,
+    rmns: Optional[jnp.ndarray] = None,
+    zmnc: Optional[jnp.ndarray] = None,
+    lmnc: Optional[jnp.ndarray] = None,
     bmns: Optional[jnp.ndarray] = None,
     bsubumns: Optional[jnp.ndarray] = None,
     bsubvmns: Optional[jnp.ndarray] = None,
@@ -603,6 +743,9 @@ def booz_xform_jax(
         xn_nyq=jnp.asarray(xn_nyq, dtype=jnp.int32),
         constants=constants,
         grids=grids,
+        rmns=jnp.asarray(rmns) if rmns is not None else None,
+        zmnc=jnp.asarray(zmnc) if zmnc is not None else None,
+        lmnc=jnp.asarray(lmnc) if lmnc is not None else None,
         bmns=jnp.asarray(bmns) if bmns is not None else None,
         bsubumns=jnp.asarray(bsubumns) if bsubumns is not None else None,
         bsubvmns=jnp.asarray(bsubvmns) if bsubvmns is not None else None,
