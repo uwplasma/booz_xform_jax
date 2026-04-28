@@ -46,6 +46,7 @@ HiddenSymmetries implementation.
    theory
    inputs_outputs
    numerics
+   jax_geometry_jacobian_plan
    examples
    stellopt_compatibility
    api

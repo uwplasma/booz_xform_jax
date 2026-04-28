@@ -506,6 +506,9 @@ def booz_xform_jax_impl(
         "zmns_b": zmns_b,
         "pmns_b": -numns_b,
         "bmnc_b": bmnc_b,
+        "gmnc_b": gmnc_b,
+        # BOOZ_XFORM/netCDF-compatible spelling for the Jacobian harmonics.
+        "gmn_b": gmnc_b,
         "jlist": jlist,
     }
 

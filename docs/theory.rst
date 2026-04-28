@@ -129,6 +129,13 @@ builds cosine and sine tables in Boozer coordinates and computes the spectral
 coefficients for :math:`|B|`, :math:`R`, :math:`Z`, :math:`\nu`, and the
 Jacobian harmonics.
 
+The Boozer Jacobian represented by ``gmnc_b`` and the file-compatible
+``gmn_b`` alias is based on
+
+.. math::
+
+   \sqrt{g}_B = \frac{G + \iota I}{|B|^2}.
+
 In practice, ``booz_xform_jax`` evaluates these integrals through
 ``jax.numpy.einsum`` contractions rather than explicit nested loops over modes
 and grid points.

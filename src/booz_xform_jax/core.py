@@ -1140,6 +1140,8 @@ class Booz_xform:
         """Run a JAX-native Boozer transform (no Python surface loop).
 
         This method returns a mapping compatible with boozmn field names.
+        The mapping includes ``gmnc_b`` and its BOOZ_XFORM-compatible ``gmn_b``
+        alias for Boozer Jacobian harmonics.
         It is intended for end-to-end JIT/differentiable workflows and
         does not populate the instance attributes (unlike `run`).
         """
