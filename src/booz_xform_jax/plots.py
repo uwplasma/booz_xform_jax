@@ -31,10 +31,11 @@ raise an exception at runtime.
 from __future__ import annotations
 
 import numpy as np
+
 try:
     import matplotlib.pyplot as plt
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-except ImportError as e:
+except ImportError:
     plt = None  # type: ignore
 
 # Import the Booz_xform class from the core module.  This import is

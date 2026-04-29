@@ -49,3 +49,6 @@ xbooz_xform_jax = "booz_xform_jax.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+extend-exclude = [".claude"]

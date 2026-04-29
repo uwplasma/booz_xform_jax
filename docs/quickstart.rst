@@ -136,6 +136,12 @@ also provided as an alias of ``gmnc_b``. For asymmetric equilibria, pass
 the corresponding sine/cosine spectra such as ``bmns_b``, ``rmns_b``,
 ``zmnc_b``, ``pmnc_b``, and ``gmns_b``.
 
+For pipelines that already hold a VMEC result in memory, replace
+``read_wout(...)`` with ``read_wout_data(wout)`` and then call ``run_jax(...)``
+or the functional API in the same way. This no-file path is validated against
+the file-backed transform for both stellarator-symmetric and asymmetric
+fixtures.
+
 Examples
 --------
 

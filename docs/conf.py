@@ -9,7 +9,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from booz_xform_jax import __version__
+from booz_xform_jax import __version__  # noqa: E402
 
 
 project = "booz_xform_jax"

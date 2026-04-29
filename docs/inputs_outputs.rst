@@ -35,7 +35,10 @@ The reader loads:
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Use :meth:`booz_xform_jax.Booz_xform.read_wout_data` when the equilibrium is
-already in memory, for example from another Python package.
+already in memory, for example from another Python package. The JAX transform
+path is tested to produce the same field, embedding, Boozer-angle-shift, and
+Jacobian harmonics from ``read_wout_data`` as from the matching file-backed
+``read_wout`` call.
 
 3. Raw coefficient arrays
 ~~~~~~~~~~~~~~~~~~~~~~~~~
