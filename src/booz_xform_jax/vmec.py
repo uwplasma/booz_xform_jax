@@ -34,6 +34,123 @@ try:
 except ImportError:
     netcdf_file = None  # pragma: no cover
 
+
+_RADIUS_DIM_NAMES = {"radius", "ns", "radial"}
+_NONNYQ_MODE_DIM_NAMES = {"mn_mode", "mnmax", "mode", "modes"}
+_NYQ_MODE_DIM_NAMES = {"mn_mode_nyq", "mnmax_nyq", "mode_nyq", "modes_nyq"}
+
+
+def _dim_name(dim) -> str:
+    """Normalize NetCDF dimension labels for layout inference."""
+    if isinstance(dim, bytes):
+        dim = dim.decode()
+    return str(dim).lower()
+
+
+def _variable_dimensions(var) -> tuple[str, ...]:
+    """Return NetCDF variable dimensions when the reader exposes them."""
+    return tuple(_dim_name(dim) for dim in getattr(var, "dimensions", ()) or ())
+
+
+def _layout_from_dimensions(
+    dimensions: tuple[str, ...],
+    *,
+    radius_names: set[str],
+    mode_names: set[str],
+) -> Optional[str]:
+    """Infer whether a VMEC coefficient array is radius-mode or mode-radius.
+
+    VMEC NetCDF files usually label coefficient dimensions, e.g.
+    ``("radius", "mn_mode")``.  Those labels are the only reliable way
+    to orient square arrays when ``ns == mnmax``.
+    """
+    if len(dimensions) != 2:
+        return None
+
+    first, second = dimensions
+    first_is_radius = first in radius_names
+    second_is_radius = second in radius_names
+    first_is_mode = first in mode_names
+    second_is_mode = second in mode_names
+
+    if first_is_radius and second_is_mode:
+        return "radius_mode"
+    if first_is_mode and second_is_radius:
+        return "mode_radius"
+    return None
+
+
+def _set_layout_hint_from_variable(self, var, *, nyquist: bool = False) -> None:
+    dimensions = _variable_dimensions(var)
+    layout = _layout_from_dimensions(
+        dimensions,
+        radius_names=_RADIUS_DIM_NAMES,
+        mode_names=_NYQ_MODE_DIM_NAMES if nyquist else _NONNYQ_MODE_DIM_NAMES,
+    )
+    if layout is not None:
+        attr = "_vmec_nyq_layout" if nyquist else "_vmec_nonnyq_layout"
+        setattr(self, attr, layout)
+
+
+def _infer_layout_from_shape(
+    arr: _np.ndarray,
+    *,
+    ns_full: int,
+    mode_count: Optional[int],
+    name: str,
+    layout_hint: Optional[str] = None,
+) -> tuple[int, str]:
+    """Infer coefficient layout, using explicit metadata before shape.
+
+    Shape-only inference is ambiguous when ``ns_full == mode_count``.
+    In that case callers that loaded a NetCDF file should pass a
+    ``layout_hint`` derived from the variable dimension names.
+    """
+    if arr.ndim != 2:
+        raise ValueError(f"{name} must be 2D, got shape {arr.shape}")
+
+    if layout_hint == "radius_mode":
+        if arr.shape[0] != ns_full:
+            raise ValueError(
+                f"{name} has layout hint radius_mode but shape {arr.shape}; "
+                f"expected first dimension ns={ns_full}"
+            )
+        return arr.shape[1], layout_hint
+    if layout_hint == "mode_radius":
+        if arr.shape[1] != ns_full:
+            raise ValueError(
+                f"{name} has layout hint mode_radius but shape {arr.shape}; "
+                f"expected second dimension ns={ns_full}"
+            )
+        return arr.shape[0], layout_hint
+
+    if arr.shape[0] == ns_full and arr.shape[1] != ns_full:
+        return arr.shape[1], "radius_mode"
+    if arr.shape[1] == ns_full and arr.shape[0] != ns_full:
+        return arr.shape[0], "mode_radius"
+
+    if (
+        mode_count is not None
+        and mode_count > 0
+        and arr.shape == (ns_full, mode_count)
+        and arr.shape != (mode_count, ns_full)
+    ):
+        return mode_count, "radius_mode"
+    if (
+        mode_count is not None
+        and mode_count > 0
+        and arr.shape == (mode_count, ns_full)
+        and arr.shape != (ns_full, mode_count)
+    ):
+        return mode_count, "mode_radius"
+
+    raise ValueError(
+        f"{name} has ambiguous or unexpected shape {arr.shape}; "
+        f"one dimension must equal ns={ns_full}. If ns equals the number "
+        "of modes, use read_wout() so NetCDF dimension names can disambiguate "
+        "the array orientation."
+    )
+
 def init_from_vmec(self, *args, s_in: Optional[_np.ndarray] = None) -> None:
     """Initialise a :class:`~booz_xform_jax.core.Booz_xform` instance with VMEC data.
 
@@ -148,21 +265,19 @@ def init_from_vmec(self, *args, s_in: Optional[_np.ndarray] = None) -> None:
     bsubvmns0 = _np.asarray(bsubvmns0)
 
     # Determine mnmax from rmnc0, allowing both (ns_full, mnmax)
-    # and (mnmax, ns_full) layouts.
-    if rmnc0.ndim != 2:
-        raise ValueError(f"rmnc0 must be 2D, got shape {rmnc0.shape}")
-
-    if rmnc0.shape[0] == ns_full and rmnc0.shape[1] != ns_full:
-        # rmnc0: (ns_full, mnmax)
-        mnmax = rmnc0.shape[1]
-    elif rmnc0.shape[1] == ns_full and rmnc0.shape[0] != ns_full:
-        # rmnc0: (mnmax, ns_full)
-        mnmax = rmnc0.shape[0]
-    else:
-        raise ValueError(
-            f"rmnc0 has unexpected shape {rmnc0.shape}; "
-            f"one dimension must equal ns={ns_full}"
-        )
+    # and (mnmax, ns_full) layouts.  read_wout() stores a layout hint
+    # from NetCDF dimension names so square arrays are not ambiguous.
+    nonnyq_layout = getattr(self, "_vmec_nonnyq_layout", None)
+    mode_count_hint = int(getattr(self, "mnmax", 0) or 0)
+    if mode_count_hint <= 0 and getattr(self, "xm", None) is not None:
+        mode_count_hint = int(_np.asarray(self.xm).shape[0])
+    mnmax, nonnyq_layout = _infer_layout_from_shape(
+        rmnc0,
+        ns_full=ns_full,
+        mode_count=mode_count_hint if mode_count_hint > 0 else None,
+        name="rmnc0",
+        layout_hint=nonnyq_layout,
+    )
 
     self.mnmax = mnmax
     mnmax = self.mnmax
@@ -175,12 +290,22 @@ def init_from_vmec(self, *args, s_in: Optional[_np.ndarray] = None) -> None:
     # SIMSOPT typically gives (mnmax, ns_full); some readers use (ns_full, mnmax).
     # We unify to (ns_full, mnmax) for the interpolation logic below.
     # ------------------------------------------------------------------
-    if rmnc0.shape == (ns_full, mnmax):
+    if nonnyq_layout == "radius_mode":
+        if rmnc0.shape != (ns_full, mnmax):
+            raise ValueError(
+                f"rmnc0 has unexpected shape {rmnc0.shape}; "
+                f"expected (ns={ns_full}, mn={mnmax})"
+            )
         rmnc_full = rmnc0
         zmns_full = zmns0
         rmns_full = rmns0
         zmnc_full = zmnc0
-    elif rmnc0.shape == (mnmax, ns_full):
+    elif nonnyq_layout == "mode_radius":
+        if rmnc0.shape != (mnmax, ns_full):
+            raise ValueError(
+                f"rmnc0 has unexpected shape {rmnc0.shape}; "
+                f"expected (mn={mnmax}, ns={ns_full})"
+            )
         rmnc_full = rmnc0.T
         zmns_full = zmns0.T
         rmns_full = rmns0.T
@@ -241,12 +366,12 @@ def init_from_vmec(self, *args, s_in: Optional[_np.ndarray] = None) -> None:
             raise ValueError(f"{name} must be 2D, got shape {arr.shape}")
 
         # Case 1: (radius, mode) = (ns_full, mnmax)
-        if arr.shape == (ns_full, mnmax):
+        if nonnyq_layout == "radius_mode" and arr.shape == (ns_full, mnmax):
             # Drop axis row, then transpose → (ns_in, mnmax) → (mnmax, ns_in)
             return arr[1:, :].T
 
         # Case 2: (mode, radius) = (mnmax, ns_full)
-        if arr.shape == (mnmax, ns_full):
+        if nonnyq_layout == "mode_radius" and arr.shape == (mnmax, ns_full):
             # Drop axis column → (mnmax, ns_in)
             return arr[:, 1:]
 
@@ -364,21 +489,28 @@ def init_from_vmec(self, *args, s_in: Optional[_np.ndarray] = None) -> None:
     # Nyquist arrays: canonicalize to (ns_full, mnmax_nyq)
     # SIMSOPT/C++ style is typically (mnmax_nyq, ns_full).
     # ------------------------------------------------------------------
-    if bmnc0.ndim != 2:
-        raise ValueError(f"bmnc0 must be 2D, got shape {bmnc0.shape}")
+    nyq_layout = getattr(self, "_vmec_nyq_layout", None)
+    nyq_mode_count_hint = int(getattr(self, "mnmax_nyq", 0) or 0)
+    if nyq_mode_count_hint <= 0 and getattr(self, "xm_nyq", None) is not None:
+        nyq_mode_count_hint = int(_np.asarray(self.xm_nyq).shape[0])
+    mnmax_nyq, nyq_layout = _infer_layout_from_shape(
+        bmnc0,
+        ns_full=ns_full,
+        mode_count=nyq_mode_count_hint if nyq_mode_count_hint > 0 else None,
+        name="bmnc0",
+        layout_hint=nyq_layout,
+    )
 
-    if bmnc0.shape[0] == ns_full and bmnc0.shape[1] != ns_full:
+    if nyq_layout == "radius_mode":
         # (ns_full, mnmax_nyq)
-        mnmax_nyq = bmnc0.shape[1]
         bmnc_full = bmnc0
         bsubumnc_full = bsubumnc0
         bsubvmnc_full = bsubvmnc0
         bmns_full = bmns0
         bsubumns_full = bsubumns0
         bsubvmns_full = bsubvmns0
-    elif bmnc0.shape[1] == ns_full and bmnc0.shape[0] != ns_full:
+    elif nyq_layout == "mode_radius":
         # (mnmax_nyq, ns_full) → transpose
-        mnmax_nyq = bmnc0.shape[0]
         bmnc_full = bmnc0.T
         bsubumnc_full = bsubumnc0.T
         bsubvmnc_full = bsubvmnc0.T
@@ -528,6 +660,12 @@ def read_wout(self, filename: str, flux: bool = False) -> None:
     if self.verbose > 0:
         print(f"[booz_xform_jax]   mpol={self.mpol}, ntor={self.ntor}, mnmax={self.mnmax}")
         print(f"[booz_xform_jax]   mpol_nyq={self.mpol_nyq}, ntor_nyq={self.ntor_nyq}, mnmax_nyq={self.mnmax_nyq}")
+
+    # Preserve NetCDF dimension metadata for init_from_vmec().  This is
+    # required when ns == mnmax because shape-only orientation inference
+    # cannot distinguish (radius, mode) from (mode, radius).
+    _set_layout_hint_from_variable(self, ds.variables["rmnc"], nyquist=False)
+    _set_layout_hint_from_variable(self, ds.variables["bmnc"], nyquist=True)
 
     # Read non-Nyquist Fourier coefficients (shape (mnmax, ns))
     rmnc0 = _np.asarray(ds.variables['rmnc'][:])
