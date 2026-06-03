@@ -122,6 +122,54 @@ def test_run_jax_matches_run():
     )
 
 
+def test_jax_api_covariant_field_gradients_are_finite():
+    b = Booz_xform()
+    b.read_wout(os.path.join(TEST_DIR, "wout_li383_1.4m.nc"))
+    b.mboz = 4
+    b.nboz = 4
+    b.compute_surfs = [0]
+    b.run()
+
+    rmnc = jnp.asarray(np.asarray(b.rmnc).T)
+    zmns = jnp.asarray(np.asarray(b.zmns).T)
+    lmns = jnp.asarray(np.asarray(b.lmns).T)
+    bmnc = jnp.asarray(np.asarray(b.bmnc).T)
+    bsubumnc = jnp.asarray(np.asarray(b.bsubumnc).T)
+    bsubvmnc = jnp.asarray(np.asarray(b.bsubvmnc).T)
+    iota = jnp.asarray(np.asarray(b.iota))
+
+    def objective(bsubu, bsubv):
+        out = booz_xform_jax(
+            rmnc=rmnc,
+            zmns=zmns,
+            lmns=lmns,
+            bmnc=bmnc,
+            bsubumnc=bsubu,
+            bsubvmnc=bsubv,
+            iota=iota,
+            xm=b.xm,
+            xn=b.xn,
+            xm_nyq=b.xm_nyq,
+            xn_nyq=b.xn_nyq,
+            nfp=b.nfp,
+            mboz=b.mboz,
+            nboz=b.nboz,
+            asym=bool(b.asym),
+            surface_indices=[0],
+        )
+        return (
+            jnp.mean(out["bmnc_b"])
+            + jnp.mean(out["rmnc_b"])
+            + jnp.mean(out["pmns_b"])
+            + jnp.mean(out["bvco_b"])
+        )
+
+    grad_u, grad_v = jax.grad(objective, argnums=(0, 1))(bsubumnc, bsubvmnc)
+
+    assert np.all(np.isfinite(np.asarray(grad_u)))
+    assert np.all(np.isfinite(np.asarray(grad_v)))
+
+
 def test_streamed_fourier_matches_vectorized():
     b = Booz_xform()
     b.read_wout(os.path.join(TEST_DIR, "wout_li383_1.4m.nc"))
