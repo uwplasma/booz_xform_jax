@@ -74,6 +74,10 @@ Milestones
    Preserve the default vectorized Fourier projection for speed and the
    ``BOOZ_XFORM_JAX_FOURIER_MODE=streamed`` path for lower memory. Both paths
    must produce the same Jacobian harmonics within regression tolerances.
+   Measured value/JVP/VJP baselines across resolution and surface counts are
+   produced by ``tools/profile_jax_api.py`` and committed under
+   ``profiles/``; regenerate with
+   ``python tools/profile_jax_api.py --out profiles/matrix.json``.
 
 5. Validation gates
    Every geometry output used by downstream codes should have:
