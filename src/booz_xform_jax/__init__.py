@@ -17,9 +17,12 @@ from .jax_api import (
     BoozXformConstants,
     BoozXformGrids,
     booz_xform_jax,
+    BoozerConfig,
+    BoozerPlan,
     booz_xform_jax_impl,
     booz_xform_from_inputs,
     prepare_booz_xform_constants,
+    prepare_booz_xform_plan,
     prepare_booz_xform_constants_from_inputs,
 )
 from .cli import run_from_legacy_input
@@ -37,6 +40,9 @@ __all__ = [
     "wireplot",
     "BoozXformConstants",
     "BoozXformGrids",
+    "BoozerConfig",
+    "BoozerPlan",
+    "prepare_booz_xform_plan",
     "prepare_booz_xform_constants",
     "prepare_booz_xform_constants_from_inputs",
     "booz_xform_jax",

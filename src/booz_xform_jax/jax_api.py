@@ -7,8 +7,10 @@ for end-to-end differentiation with vmec_jax -> booz_xform_jax -> neo_jax.
 
 from __future__ import annotations
 
+import collections
+import logging
 from dataclasses import dataclass
-from typing import Optional, Sequence, Tuple
+from typing import Any, Optional, Sequence, Tuple
 import os
 
 import jax
@@ -52,6 +54,219 @@ class BoozXformGrids:
     def tree_unflatten(cls, aux, children):
         theta_grid, zeta_grid, xm_b, xn_b = children
         return cls(theta_grid=theta_grid, zeta_grid=zeta_grid, xm_b=xm_b, xn_b=xn_b)
+
+
+_LOGGER = logging.getLogger("booz_xform_jax")
+
+_FOURIER_MODES = ("vectorized", "streamed")
+
+
+@dataclass(frozen=True)
+class BoozerConfig:
+    """Explicit execution configuration for the JAX Boozer transform.
+
+    ``surface_chunk`` bounds how many surfaces one compiled contraction
+    batches: the dominant phase tensors scale linearly in the batch and the
+    committed baseline shows superlinear wall-time growth once they spill
+    the cache hierarchy. ``"auto"`` batches everything unless
+    ``memory_budget_bytes`` is set, in which case the chunk is the largest
+    count whose modeled buffers fit the budget. ``fourier_mode`` selects the
+    vectorized or streamed contraction; ``trig_f32`` stores the trig tables
+    in single precision. The environment variables the kernel used to read
+    (``BOOZ_XFORM_JAX_FOURIER_MODE``, ``BOOZ_XFORM_JAX_TRIG_F32``) supply
+    defaults through :meth:`from_env` only when no config is passed.
+    """
+
+    mboz: int
+    nboz: int
+    surface_chunk: int | str = "auto"
+    memory_budget_bytes: int | None = None
+    fourier_mode: str = "vectorized"
+    trig_f32: bool = False
+
+    def __post_init__(self):
+        if self.fourier_mode not in _FOURIER_MODES:
+            raise ValueError(
+                f"fourier_mode must be one of {_FOURIER_MODES}, "
+                f"got {self.fourier_mode!r}")
+        if isinstance(self.surface_chunk, str):
+            if self.surface_chunk != "auto":
+                raise ValueError(
+                    f"surface_chunk must be a positive int or 'auto', "
+                    f"got {self.surface_chunk!r}")
+        elif int(self.surface_chunk) < 1:
+            raise ValueError("surface_chunk must be >= 1")
+        if (self.memory_budget_bytes is not None
+                and int(self.memory_budget_bytes) < 1):
+            raise ValueError("memory_budget_bytes must be positive")
+
+    @classmethod
+    def from_env(cls, *, mboz: int, nboz: int) -> "BoozerConfig":
+        """Defaults from the legacy environment variables (CLI compatibility)."""
+        fourier_mode = os.getenv(
+            "BOOZ_XFORM_JAX_FOURIER_MODE", "vectorized").strip().lower()
+        trig_f32 = os.getenv(
+            "BOOZ_XFORM_JAX_TRIG_F32", "0").strip().lower() in {
+                "1", "true", "yes", "on"}
+        return cls(mboz=int(mboz), nboz=int(nboz),
+                   fourier_mode=fourier_mode, trig_f32=trig_f32)
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class BoozerPlan:
+    """Reusable static plan: mode tables, angle grids, and trig tables.
+
+    Built once per (config, mode lists, ``nfp``, ``asym``) and reused across
+    surfaces, equilibrium iterates, and optimization steps — the tables are
+    pure functions of the static resolution, and hoisting them out of the
+    per-call trace keeps them out of every compiled program. Physical
+    coefficients never live in the plan.
+    """
+
+    config: BoozerConfig
+    constants: BoozXformConstants
+    grids: BoozXformGrids
+    tables: dict
+
+    def tree_flatten(self):
+        names = tuple(sorted(self.tables))
+        children = (self.grids,) + tuple(self.tables[k] for k in names)
+        return children, (self.config, self.constants, names)
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        config, constants, names = aux
+        grids = children[0]
+        tables = dict(zip(names, children[1:]))
+        return cls(config=config, constants=constants, grids=grids,
+                   tables=tables)
+
+
+def _build_tables(constants: BoozXformConstants, grids: BoozXformGrids,
+                  xm, xn, xm_nyq, xn_nyq, *, trig_f32: bool) -> dict:
+    """The per-resolution trig/mode tables the surface transform contracts."""
+    xm_non_j = jnp.asarray(xm, dtype=jnp.int32)
+    xn_non_j = jnp.asarray(xn, dtype=jnp.int32)
+    xm_nyq_j = jnp.asarray(xm_nyq, dtype=jnp.int32)
+    xn_nyq_j = jnp.asarray(xn_nyq, dtype=jnp.int32)
+
+    cosm, sinm, cosn, sinn = _init_trig(
+        grids.theta_grid, grids.zeta_grid, constants.mmax_non,
+        constants.nmax_non, constants.nfp)
+    cosm_nyq, sinm_nyq, cosn_nyq, sinn_nyq = _init_trig(
+        grids.theta_grid, grids.zeta_grid, constants.mmax_nyq,
+        constants.nmax_nyq, constants.nfp)
+    if trig_f32:
+        cosm, sinm, cosn, sinn = (
+            t.astype(jnp.float32) for t in (cosm, sinm, cosn, sinn))
+        cosm_nyq, sinm_nyq, cosn_nyq, sinn_nyq = (
+            t.astype(jnp.float32)
+            for t in (cosm_nyq, sinm_nyq, cosn_nyq, sinn_nyq))
+
+    cosm_m_non = jnp.take(cosm, xm_non_j, axis=1)
+    sinm_m_non = jnp.take(sinm, xm_non_j, axis=1)
+    abs_n_non = jnp.abs(xn_non_j // constants.nfp)
+    cosn_n_non = jnp.take(cosn, abs_n_non, axis=1)
+    sinn_n_non = jnp.take(sinn, abs_n_non, axis=1)
+    sign_non = jnp.where(xn_non_j < 0, -1.0, 1.0)[None, :]
+
+    cosm_m_nyq = jnp.take(cosm_nyq, xm_nyq_j, axis=1)
+    sinm_m_nyq = jnp.take(sinm_nyq, xm_nyq_j, axis=1)
+    abs_n_nyq = jnp.abs(xn_nyq_j // constants.nfp)
+    cosn_n_nyq = jnp.take(cosn_nyq, abs_n_nyq, axis=1)
+    sinn_n_nyq = jnp.take(sinn_nyq, abs_n_nyq, axis=1)
+    sign_nyq = jnp.where(xn_nyq_j < 0, -1.0, 1.0)[None, :]
+
+    return {
+        "tcos_non": cosm_m_non * cosn_n_non + sinm_m_non * sinn_n_non * sign_non,
+        "tsin_non": sinm_m_non * cosn_n_non - cosm_m_non * sinn_n_non * sign_non,
+        "tcos_nyq": cosm_m_nyq * cosn_n_nyq + sinm_m_nyq * sinn_n_nyq * sign_nyq,
+        "tsin_nyq": sinm_m_nyq * cosn_n_nyq - cosm_m_nyq * sinn_n_nyq * sign_nyq,
+        "m_non_f": xm_non_j.astype(jnp.float64),
+        "n_non_f": xn_non_j.astype(jnp.float64),
+        "m_nyq_f": xm_nyq_j.astype(jnp.float64),
+        "n_nyq_f": xn_nyq_j.astype(jnp.float64),
+        "idx_theta0": jnp.arange(0, constants.nzeta),
+        "idx_thetapi": jnp.arange(
+            (constants.nu2_b - 1) * constants.nzeta,
+            constants.nu2_b * constants.nzeta),
+        "m_b": grids.xm_b,
+        "abs_n_b": jnp.abs(grids.xn_b // constants.nfp),
+        "sign_b": jnp.where(grids.xn_b < 0, -1.0, 1.0)[None, :],
+    }
+
+
+#: Bounded plan cache. Plans hold only per-resolution tables (a few MB at
+#: high mboz); eviction only costs a rebuild, never correctness.
+_PLAN_CACHE: "collections.OrderedDict[Any, BoozerPlan]" = collections.OrderedDict()
+_PLAN_CACHE_MAX = 8
+
+
+def prepare_booz_xform_plan(
+    *,
+    nfp: int,
+    asym: bool,
+    xm: Sequence[int],
+    xn: Sequence[int],
+    xm_nyq: Sequence[int],
+    xn_nyq: Sequence[int],
+    config: BoozerConfig,
+) -> BoozerPlan:
+    """Build (or fetch from a bounded cache) the reusable transform plan."""
+    import numpy as np
+
+    key = (
+        config,
+        int(nfp),
+        bool(asym),
+        np.asarray(xm, dtype=np.int32).tobytes(),
+        np.asarray(xn, dtype=np.int32).tobytes(),
+        np.asarray(xm_nyq, dtype=np.int32).tobytes(),
+        np.asarray(xn_nyq, dtype=np.int32).tobytes(),
+    )
+    hit = _PLAN_CACHE.get(key)
+    if hit is not None:
+        _PLAN_CACHE.move_to_end(key)
+        return hit
+    constants, grids = prepare_booz_xform_constants(
+        nfp=int(nfp), mboz=config.mboz, nboz=config.nboz, asym=bool(asym),
+        xm=xm, xn=xn, xm_nyq=xm_nyq, xn_nyq=xn_nyq)
+    tables = _build_tables(constants, grids, xm, xn, xm_nyq, xn_nyq,
+                           trig_f32=config.trig_f32)
+    plan = BoozerPlan(config=config, constants=constants, grids=grids,
+                      tables=tables)
+    _PLAN_CACHE[key] = plan
+    while len(_PLAN_CACHE) > _PLAN_CACHE_MAX:
+        _PLAN_CACHE.popitem(last=False)
+    return plan
+
+
+def _resolve_surface_chunk(config: BoozerConfig,
+                           constants: BoozXformConstants,
+                           n_surfaces: int, mn_non: int, mn_nyq: int,
+                           mn_boz: int) -> int:
+    """Deterministic chunk choice; logs what it picked and why.
+
+    The buffer model counts the dominant per-surface tensors — the input
+    phase projections (``points x mn_non`` and ``points x mn_nyq``) and the
+    output synthesis (``points x mn_boz``) — with a factor-four headroom for
+    the intermediates the contraction materializes alongside them. Host RSS
+    is never consulted (it says nothing about accelerator capacity).
+    """
+    if isinstance(config.surface_chunk, int):
+        chunk = min(int(config.surface_chunk), n_surfaces)
+    elif config.memory_budget_bytes is None:
+        chunk = n_surfaces
+    else:
+        points = constants.ntheta * constants.nzeta
+        per_surface = 4 * 8 * points * (mn_non + mn_nyq + mn_boz)
+        chunk = max(1, min(n_surfaces,
+                           int(config.memory_budget_bytes) // per_surface))
+    _LOGGER.info(
+        "surface_chunk=%d for %d surfaces (policy=%r, budget=%r)",
+        chunk, n_surfaces, config.surface_chunk, config.memory_budget_bytes)
+    return chunk
 
 
 def _prepare_mode_lists(mboz: int, nboz: int, nfp: int) -> Tuple[jnp.ndarray, jnp.ndarray]:
@@ -443,11 +658,18 @@ def booz_xform_jax_impl(
     bsubumns: Optional[jnp.ndarray] = None,
     bsubvmns: Optional[jnp.ndarray] = None,
     surface_indices: Optional[jnp.ndarray] = None,
+    config: Optional[BoozerConfig] = None,
+    plan: Optional[BoozerPlan] = None,
 ) -> dict:
     """JAX-native Boozer transform over all (or selected) surfaces.
 
     All inputs must be JAX arrays with surface dimension first, i.e. shape
     (ns, mn_non) for non-Nyquist arrays and (ns, mn_nyq) for Nyquist arrays.
+
+    ``plan`` (from :func:`prepare_booz_xform_plan`) supplies the prebuilt
+    per-resolution tables and its own config; ``config`` alone controls
+    execution with tables built inline. With neither, the legacy environment
+    variables act as the config defaults.
     """
     ns_b_full = int(rmnc.shape[0])
     if surface_indices is not None:
@@ -471,63 +693,22 @@ def booz_xform_jax_impl(
         if bsubvmns is not None:
             bsubvmns = jnp.take(bsubvmns, surface_indices, axis=0)
 
-    xm_non_j = jnp.asarray(xm, dtype=jnp.int32)
-    xn_non_j = jnp.asarray(xn, dtype=jnp.int32)
-    xm_nyq_j = jnp.asarray(xm_nyq, dtype=jnp.int32)
-    xn_nyq_j = jnp.asarray(xn_nyq, dtype=jnp.int32)
-
-    fourier_mode = os.getenv("BOOZ_XFORM_JAX_FOURIER_MODE", "vectorized").strip().lower()
-    if fourier_mode not in {"vectorized", "streamed"}:
-        raise ValueError(f"Unsupported BOOZ_XFORM_JAX_FOURIER_MODE '{fourier_mode}'")
-    trig_f32 = os.getenv("BOOZ_XFORM_JAX_TRIG_F32", "0").strip().lower() in {"1", "true", "yes", "on"}
-
-    # Precompute trig tables and mode combinations once for all surfaces.
-    cosm, sinm, cosn, sinn = _init_trig(
-        grids.theta_grid, grids.zeta_grid, constants.mmax_non, constants.nmax_non, constants.nfp
-    )
-    cosm_nyq, sinm_nyq, cosn_nyq, sinn_nyq = _init_trig(
-        grids.theta_grid, grids.zeta_grid, constants.mmax_nyq, constants.nmax_nyq, constants.nfp
-    )
-    if trig_f32:
-        cosm = cosm.astype(jnp.float32)
-        sinm = sinm.astype(jnp.float32)
-        cosn = cosn.astype(jnp.float32)
-        sinn = sinn.astype(jnp.float32)
-        cosm_nyq = cosm_nyq.astype(jnp.float32)
-        sinm_nyq = sinm_nyq.astype(jnp.float32)
-        cosn_nyq = cosn_nyq.astype(jnp.float32)
-        sinn_nyq = sinn_nyq.astype(jnp.float32)
-
-    cosm_m_non = jnp.take(cosm, xm_non_j, axis=1)
-    sinm_m_non = jnp.take(sinm, xm_non_j, axis=1)
-    abs_n_non = jnp.abs(xn_non_j // constants.nfp)
-    cosn_n_non = jnp.take(cosn, abs_n_non, axis=1)
-    sinn_n_non = jnp.take(sinn, abs_n_non, axis=1)
-    sign_non = jnp.where(xn_non_j < 0, -1.0, 1.0)[None, :]
-    tcos_non = cosm_m_non * cosn_n_non + sinm_m_non * sinn_n_non * sign_non
-    tsin_non = sinm_m_non * cosn_n_non - cosm_m_non * sinn_n_non * sign_non
-    m_non_f = xm_non_j.astype(jnp.float64)
-    n_non_f = xn_non_j.astype(jnp.float64)
-
-    cosm_m_nyq = jnp.take(cosm_nyq, xm_nyq_j, axis=1)
-    sinm_m_nyq = jnp.take(sinm_nyq, xm_nyq_j, axis=1)
-    abs_n_nyq = jnp.abs(xn_nyq_j // constants.nfp)
-    cosn_n_nyq = jnp.take(cosn_nyq, abs_n_nyq, axis=1)
-    sinn_n_nyq = jnp.take(sinn_nyq, abs_n_nyq, axis=1)
-    sign_nyq = jnp.where(xn_nyq_j < 0, -1.0, 1.0)[None, :]
-    tcos_nyq = cosm_m_nyq * cosn_n_nyq + sinm_m_nyq * sinn_n_nyq * sign_nyq
-    tsin_nyq = sinm_m_nyq * cosn_n_nyq - cosm_m_nyq * sinn_n_nyq * sign_nyq
-    m_nyq_f = xm_nyq_j.astype(jnp.float64)
-    n_nyq_f = xn_nyq_j.astype(jnp.float64)
-
-    idx_theta0 = jnp.arange(0, constants.nzeta)
-    idx_thetapi = jnp.arange(
-        (constants.nu2_b - 1) * constants.nzeta, constants.nu2_b * constants.nzeta
-    )
-
-    m_b = grids.xm_b
-    abs_n_b = jnp.abs(grids.xn_b // constants.nfp)
-    sign_b = jnp.where(grids.xn_b < 0, -1.0, 1.0)[None, :]
+    if plan is not None:
+        cfg = plan.config
+        constants, grids = plan.constants, plan.grids
+        tables = plan.tables
+    else:
+        cfg = config if config is not None else BoozerConfig.from_env(
+            mboz=constants.mboz, nboz=constants.nboz)
+        tables = _build_tables(constants, grids, xm, xn, xm_nyq, xn_nyq,
+                               trig_f32=cfg.trig_f32)
+    fourier_mode, trig_f32 = cfg.fourier_mode, cfg.trig_f32
+    tcos_non, tsin_non = tables["tcos_non"], tables["tsin_non"]
+    tcos_nyq, tsin_nyq = tables["tcos_nyq"], tables["tsin_nyq"]
+    m_non_f, n_non_f = tables["m_non_f"], tables["n_non_f"]
+    m_nyq_f, n_nyq_f = tables["m_nyq_f"], tables["n_nyq_f"]
+    idx_theta0, idx_thetapi = tables["idx_theta0"], tables["idx_thetapi"]
+    m_b, abs_n_b, sign_b = tables["m_b"], tables["abs_n_b"], tables["sign_b"]
 
     def _surf(
         _rmnc,
@@ -586,6 +767,35 @@ def booz_xform_jax_impl(
     bsubumns_in = bsubumns if bsubumns is not None else jnp.zeros_like(bsubumnc)
     bsubvmns_in = bsubvmns if bsubvmns is not None else jnp.zeros_like(bsubvmnc)
 
+    inputs = (
+        rmnc, rmns_in, zmnc_in, zmns, lmnc_in, lmns, bmnc,
+        bsubumnc, bsubvmnc, iota, bmns_in, bsubumns_in, bsubvmns_in,
+    )
+    n_surf = int(rmnc.shape[0])
+    chunk = _resolve_surface_chunk(
+        cfg, constants, n_surf, mn_non=int(m_non_f.shape[0]),
+        mn_nyq=int(m_nyq_f.shape[0]), mn_boz=int(m_b.shape[0]))
+    if chunk >= n_surf:
+        outputs = vmap_fn(*inputs)
+    else:
+        # lax.map over fixed-size surface blocks: one compiled body, buffers
+        # bounded by the chunk instead of the full selection. The tail pad
+        # replicates the last surface (well-conditioned, unlike zeros, whose
+        # 1/B would poison reverse-mode through the padded rows) and is
+        # sliced away, value and cotangent alike, by the crop below.
+        n_chunks = -(-n_surf // chunk)
+        pad = n_chunks * chunk - n_surf
+
+        def _blocked(a):
+            padded = jnp.pad(
+                a, ((0, pad),) + ((0, 0),) * (a.ndim - 1), mode="edge")
+            return padded.reshape((n_chunks, chunk) + a.shape[1:])
+
+        stacked = jax.lax.map(
+            lambda block: vmap_fn(*block), tuple(_blocked(a) for a in inputs))
+        outputs = tuple(
+            o.reshape((n_chunks * chunk,) + o.shape[2:])[:n_surf]
+            for o in stacked)
     (
         bmnc_b,
         bmns_b,
@@ -599,21 +809,7 @@ def booz_xform_jax_impl(
         gmns_b,
         Boozer_I,
         Boozer_G,
-    ) = vmap_fn(
-        rmnc,
-        rmns_in,
-        zmnc_in,
-        zmns,
-        lmnc_in,
-        lmns,
-        bmnc,
-        bsubumnc,
-        bsubvmnc,
-        iota,
-        bmns_in,
-        bsubumns_in,
-        bsubvmns_in,
-    )
+    ) = outputs
 
     ns_b = bmnc_b.shape[0]
     if surface_indices is None:
