@@ -71,9 +71,18 @@ Milestones
    Jacobians reasonable.
 
 4. Performance modes
-   Preserve the default vectorized Fourier projection for speed and the
-   ``BOOZ_XFORM_JAX_FOURIER_MODE=streamed`` path for lower memory. Both paths
-   must produce the same Jacobian harmonics within regression tolerances.
+   Execution is configured explicitly through ``BoozerConfig`` (fourier
+   mode, trig precision, ``surface_chunk``, optional memory budget); the
+   legacy environment variables (``BOOZ_XFORM_JAX_FOURIER_MODE``,
+   ``BOOZ_XFORM_JAX_TRIG_F32``) act only as defaults when no config is
+   passed. ``prepare_booz_xform_plan`` builds the per-resolution mode and
+   trig tables once, cached and reusable across surfaces, equilibrium
+   iterates, and optimization steps. ``surface_chunk`` bounds how many
+   surfaces one compiled contraction batches (``lax.map`` over fixed-size
+   blocks): on the committed Apple M4 baseline's memory-wall case (LASYM,
+   ``mboz=32``, 16 surfaces) a chunk of 4 cuts the warm transform from
+   1.50 s to 0.63 s, with agreement to double rounding. All paths must
+   produce the same Jacobian harmonics within regression tolerances.
    Measured value/JVP/VJP baselines across resolution and surface counts are
    produced by ``tools/profile_jax_api.py`` and committed under
    ``profiles/``; regenerate with
