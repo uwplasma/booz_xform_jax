@@ -34,18 +34,24 @@ BOOZ_XFORM-style angular grids:
 These conventions are implemented in
 :func:`booz_xform_jax.jax_api.prepare_booz_xform_constants`.
 
-Vectorized Versus Streamed Fourier Accumulation
------------------------------------------------
+Separable Fourier Projection
+----------------------------
 
-Two Fourier-accumulation modes are supported:
+The projection onto Boozer modes evaluates phases at the mapped angles
+``(theta_B, zeta_B)``. Because each phase factors into a ``theta_B``-only and
+a ``zeta_B``-only table, the code contracts the zeta factor into the fields
+first and never materializes a ``(points x mn_boz)`` phase tensor; every
+intermediate stays at ``(points x (nboz + 1) x fields)``. This is an exact
+reorganization of the dense point-by-mode contraction, and the test suite
+checks values and JVP/VJP derivatives against a dense reference to
+double-rounding tolerances on bundled symmetric and asymmetric cases.
 
-- ``vectorized``: the default, fastest path for most moderate-size problems,
-- ``streamed``: a lower-memory path that reduces large temporary allocations.
-
-The mode can be selected by setting the environment variable
-``BOOZ_XFORM_JAX_FOURIER_MODE=streamed`` before calling the transform. The test
-suite checks that both modes agree on bundled symmetric and asymmetric cases,
-including the Jacobian harmonics.
+A uniform-grid FFT cannot replace this projection: the mapped angles vary
+from grid point to grid point (by several grid spacings across a surface),
+so the quadrature nodes are not equispaced in the Boozer angles. The input
+synthesis stage runs on the uniform VMEC-angle tensor grid, where an FFT
+would be exact, but that stage is bounded by the (small, fixed) VMEC
+spectrum and is not a bottleneck.
 
 JIT Compilation And Differentiation
 -----------------------------------

@@ -106,7 +106,14 @@ def _inputs(bx, mboz: int, nboz: int):
 
 
 def _buffer_model(bx, mboz: int, nboz: int, n_surfaces: int) -> dict:
-    """Analytic sizes of the dominant tensors, in bytes at float64."""
+    """Analytic sizes of the dominant tensors, in bytes at float64.
+
+    ``input_phase_tables`` are the shared per-resolution synthesis tables
+    (cos and sin, non-Nyquist and Nyquist); ``projection_buffers`` mirrors
+    the per-surface model in ``jax_api._resolve_surface_chunk`` (Boozer
+    trig tables plus separable intermediates), without its headroom factor.
+    """
+    mn_non = int(np.asarray(bx.xm).size)
     mn_nyq = int(np.asarray(bx.xm_nyq).size)
     mn_boz = int((2 * nboz + 1) * mboz - nboz)
     # jax_api._prepare_grids: ntheta = 2*(2*mboz+1), nzeta = 2*(2*nboz+1)
@@ -115,10 +122,11 @@ def _buffer_model(bx, mboz: int, nboz: int, n_surfaces: int) -> dict:
     points = ntheta * nzeta
     itemsize = 8
     return {
-        "mn_nyq": mn_nyq, "mn_boz": mn_boz,
+        "mn_non": mn_non, "mn_nyq": mn_nyq, "mn_boz": mn_boz,
         "ntheta": ntheta, "nzeta": nzeta,
-        "input_phase_tensor": n_surfaces * points * mn_nyq * itemsize,
-        "output_phase_tensor": n_surfaces * points * mn_boz * itemsize,
+        "input_phase_tables": 2 * points * (mn_non + mn_nyq) * itemsize,
+        "projection_buffers": n_surfaces * points * (
+            2 * (mboz + nboz + 2) + 10 * (nboz + 1)) * itemsize,
         "returned_spectra": n_surfaces * mn_boz * itemsize,
     }
 
