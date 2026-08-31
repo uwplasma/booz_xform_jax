@@ -38,8 +38,12 @@ def test_tiny_matrix_produces_schema_complete_records(tmp_path):
     assert buffers["mn_boz"] == (2 * 4 + 1) * 4 - 4
     assert buffers["ntheta"] == 2 * (2 * 4 + 1)
     assert buffers["nzeta"] == 2 * (2 * 4 + 1)
-    assert buffers["input_phase_tensor"] == (
-        buffers["ntheta"] * buffers["nzeta"] * buffers["mn_nyq"] * 8
+    points = buffers["ntheta"] * buffers["nzeta"]
+    assert buffers["input_phase_tables"] == (
+        2 * points * (buffers["mn_non"] + buffers["mn_nyq"]) * 8
+    )
+    assert buffers["projection_buffers"] == (
+        points * (2 * (4 + 4 + 2) + 10 * (4 + 1)) * 8
     )
     assert record["spectrum_shape"] == [1, buffers["mn_boz"]]
     assert record["memory_bytes"]["peak_host_rss"] > 0

@@ -58,37 +58,28 @@ class BoozXformGrids:
 
 _LOGGER = logging.getLogger("booz_xform_jax")
 
-_FOURIER_MODES = ("vectorized", "streamed")
-
 
 @dataclass(frozen=True)
 class BoozerConfig:
     """Explicit execution configuration for the JAX Boozer transform.
 
     ``surface_chunk`` bounds how many surfaces one compiled contraction
-    batches: the dominant phase tensors scale linearly in the batch and the
-    committed baseline shows superlinear wall-time growth once they spill
-    the cache hierarchy. ``"auto"`` batches everything unless
-    ``memory_budget_bytes`` is set, in which case the chunk is the largest
-    count whose modeled buffers fit the budget. ``fourier_mode`` selects the
-    vectorized or streamed contraction; ``trig_f32`` stores the trig tables
-    in single precision. The environment variables the kernel used to read
-    (``BOOZ_XFORM_JAX_FOURIER_MODE``, ``BOOZ_XFORM_JAX_TRIG_F32``) supply
-    defaults through :meth:`from_env` only when no config is passed.
+    batches; ``"auto"`` batches everything unless ``memory_budget_bytes``
+    is set, in which case the chunk is the largest count whose modeled
+    per-surface buffers (Boozer trig tables plus the separable projection
+    intermediates) fit the budget. ``trig_f32`` stores the trig tables in
+    single precision. The environment variable the kernel used to read
+    (``BOOZ_XFORM_JAX_TRIG_F32``) supplies defaults through
+    :meth:`from_env` only when no config is passed.
     """
 
     mboz: int
     nboz: int
     surface_chunk: int | str = "auto"
     memory_budget_bytes: int | None = None
-    fourier_mode: str = "vectorized"
     trig_f32: bool = False
 
     def __post_init__(self):
-        if self.fourier_mode not in _FOURIER_MODES:
-            raise ValueError(
-                f"fourier_mode must be one of {_FOURIER_MODES}, "
-                f"got {self.fourier_mode!r}")
         if isinstance(self.surface_chunk, str):
             if self.surface_chunk != "auto":
                 raise ValueError(
@@ -102,14 +93,11 @@ class BoozerConfig:
 
     @classmethod
     def from_env(cls, *, mboz: int, nboz: int) -> "BoozerConfig":
-        """Defaults from the legacy environment variables (CLI compatibility)."""
-        fourier_mode = os.getenv(
-            "BOOZ_XFORM_JAX_FOURIER_MODE", "vectorized").strip().lower()
+        """Defaults from the legacy environment variable (CLI compatibility)."""
         trig_f32 = os.getenv(
             "BOOZ_XFORM_JAX_TRIG_F32", "0").strip().lower() in {
                 "1", "true", "yes", "on"}
-        return cls(mboz=int(mboz), nboz=int(nboz),
-                   fourier_mode=fourier_mode, trig_f32=trig_f32)
+        return cls(mboz=int(mboz), nboz=int(nboz), trig_f32=trig_f32)
 
 
 @jax.tree_util.register_pytree_node_class
@@ -244,15 +232,16 @@ def prepare_booz_xform_plan(
 
 def _resolve_surface_chunk(config: BoozerConfig,
                            constants: BoozXformConstants,
-                           n_surfaces: int, mn_non: int, mn_nyq: int,
-                           mn_boz: int) -> int:
+                           n_surfaces: int) -> int:
     """Deterministic chunk choice; logs what it picked and why.
 
-    The buffer model counts the dominant per-surface tensors — the input
-    phase projections (``points x mn_non`` and ``points x mn_nyq``) and the
-    output synthesis (``points x mn_boz``) — with a factor-four headroom for
-    the intermediates the contraction materializes alongside them. Host RSS
-    is never consulted (it says nothing about accelerator capacity).
+    The buffer model counts the dominant per-surface tensors of the
+    separable contraction — the Boozer trig tables
+    (``points x (mboz+1)`` / ``points x (nboz+1)``, cos and sin) and the
+    zeta-contracted projection intermediates
+    (``points x (nboz+1) x fields`` with ten field slots) — with a
+    factor-four headroom for what XLA materializes alongside them. Host
+    RSS is never consulted (it says nothing about accelerator capacity).
     """
     if isinstance(config.surface_chunk, int):
         chunk = min(int(config.surface_chunk), n_surfaces)
@@ -260,7 +249,9 @@ def _resolve_surface_chunk(config: BoozerConfig,
         chunk = n_surfaces
     else:
         points = constants.ntheta * constants.nzeta
-        per_surface = 4 * 8 * points * (mn_non + mn_nyq + mn_boz)
+        per_surface = 4 * 8 * points * (
+            2 * (constants.mboz + constants.nboz + 2)
+            + 10 * (constants.nboz + 1))
         chunk = max(1, min(n_surfaces,
                            int(config.memory_budget_bytes) // per_surface))
     _LOGGER.info(
@@ -406,7 +397,6 @@ def _surface_transform(
     bmns: Optional[jnp.ndarray] = None,
     bsubumns: Optional[jnp.ndarray] = None,
     bsubvmns: Optional[jnp.ndarray] = None,
-    fourier_mode: str = "vectorized",
     trig_f32: bool = False,
 ) -> Tuple[jnp.ndarray, ...]:
     """Compute Boozer spectra for a single surface."""
@@ -501,124 +491,49 @@ def _surface_transform(
     fourier_factor = jnp.ones((m_b.shape[0],), dtype=jnp.float64) * fourier_factor0
     fourier_factor = fourier_factor.at[0].set(fourier_factor0 * 0.5)
 
-    if fourier_mode == "streamed":
-        base_b = bmod * dB_dvmec
-        base_r = r * dB_dvmec
-        base_z = z * dB_dvmec
-        base_nu = nu * dB_dvmec
-        base_g = boozer_jac * dB_dvmec
+    # Separable projection onto the Boozer modes. The phase factors
+    # cos/sin(m*theta_B - n*zeta_B) separate per mode index into a
+    # theta_B-only and a zeta_B-only table, so contracting the zeta factor
+    # first keeps every intermediate at (points x (nboz+1) x fields)
+    # instead of materializing the (points x mn_boz) phase tensors.
+    base_b = bmod * dB_dvmec
+    base_r = r * dB_dvmec
+    base_z = z * dB_dvmec
+    base_nu = nu * dB_dvmec
+    base_g = boozer_jac * dB_dvmec
+    sign_v = jnp.reshape(sign_b, (-1,))
+    ff = fourier_factor[:, None]
 
-        m_b_f = m_b
-        abs_n_b_f = abs_n_b
-        sign_b_f = jnp.reshape(sign_b, (-1,))
+    def _zeta_contract(fields):
+        return (cosn_b[:, :, None] * fields[:, None, :],
+                sinn_b[:, :, None] * fields[:, None, :])
 
-        def init_out():
-            zeros = jnp.zeros((m_b_f.shape[0],), dtype=base_b.dtype)
-            return zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros
+    def _cos_project(yc, ys):
+        cc = jnp.einsum("im,inf->mnf", cosm_b, yc)
+        ss = jnp.einsum("im,inf->mnf", sinm_b, ys)
+        return ff * (cc[m_b, abs_n_b] + sign_v[:, None] * ss[m_b, abs_n_b])
 
-        def body(k, state):
-            (
-                bmnc_b,
-                bmns_b,
-                rmnc_b,
-                rmns_b,
-                zmnc_b,
-                zmns_b,
-                numnc_b,
-                numns_b,
-                gmnc_b,
-                gmns_b,
-            ) = state
-            m_idx = m_b_f[k]
-            n_idx = abs_n_b_f[k]
-            sign = sign_b_f[k]
+    def _sin_project(yc, ys):
+        sc = jnp.einsum("im,inf->mnf", sinm_b, yc)
+        cs = jnp.einsum("im,inf->mnf", cosm_b, ys)
+        return ff * (sc[m_b, abs_n_b] - sign_v[:, None] * cs[m_b, abs_n_b])
 
-            cosm = jax.lax.dynamic_index_in_dim(cosm_b, m_idx, axis=1, keepdims=False)
-            sinm = jax.lax.dynamic_index_in_dim(sinm_b, m_idx, axis=1, keepdims=False)
-            cosn = jax.lax.dynamic_index_in_dim(cosn_b, n_idx, axis=1, keepdims=False)
-            sinn = jax.lax.dynamic_index_in_dim(sinn_b, n_idx, axis=1, keepdims=False)
-
-            tcos = cosm * cosn + sinm * sinn * sign
-            tsin = sinm * cosn - cosm * sinn * sign
-            ff = fourier_factor[k]
-
-            bmnc_b = bmnc_b.at[k].set(ff * jnp.sum(tcos * base_b))
-            rmnc_b = rmnc_b.at[k].set(ff * jnp.sum(tcos * base_r))
-            zmns_b = zmns_b.at[k].set(ff * jnp.sum(tsin * base_z))
-            numns_b = numns_b.at[k].set(ff * jnp.sum(tsin * base_nu))
-            gmnc_b = gmnc_b.at[k].set(ff * jnp.sum(tcos * base_g))
-            if constants.asym:
-                bmns_b = bmns_b.at[k].set(ff * jnp.sum(tsin * base_b))
-                rmns_b = rmns_b.at[k].set(ff * jnp.sum(tsin * base_r))
-                zmnc_b = zmnc_b.at[k].set(ff * jnp.sum(tcos * base_z))
-                numnc_b = numnc_b.at[k].set(ff * jnp.sum(tcos * base_nu))
-                gmns_b = gmns_b.at[k].set(ff * jnp.sum(tsin * base_g))
-            return (
-                bmnc_b,
-                bmns_b,
-                rmnc_b,
-                rmns_b,
-                zmnc_b,
-                zmns_b,
-                numnc_b,
-                numns_b,
-                gmnc_b,
-                gmns_b,
-            )
-
-        (
-            bmnc_b,
-            bmns_b,
-            rmnc_b,
-            rmns_b,
-            zmnc_b,
-            zmns_b,
-            numnc_b,
-            numns_b,
-            gmnc_b,
-            gmns_b,
-        ) = jax.lax.fori_loop(
-            0, m_b_f.shape[0], body, init_out()
-        )
+    if constants.asym:
+        yc, ys = _zeta_contract(
+            jnp.stack([base_b, base_r, base_z, base_nu, base_g], axis=-1))
+        cos_p = _cos_project(yc, ys)
+        sin_p = _sin_project(yc, ys)
+        bmnc_b, rmnc_b, zmnc_b, numnc_b, gmnc_b = cos_p.T
+        bmns_b, rmns_b, zmns_b, numns_b, gmns_b = sin_p.T
     else:
-        cosm_b_m = jnp.take(cosm_b, m_b, axis=1)
-        sinm_b_m = jnp.take(sinm_b, m_b, axis=1)
-        cosn_b_n = jnp.take(cosn_b, abs_n_b, axis=1)
-        sinn_b_n = jnp.take(sinn_b, abs_n_b, axis=1)
-
-        tcos_modes = cosm_b_m * cosn_b_n + sinm_b_m * sinn_b_n * sign_b
-        tsin_modes = sinm_b_m * cosn_b_n - cosm_b_m * sinn_b_n * sign_b
-
-        base_b = bmod * dB_dvmec
-        base_r = r * dB_dvmec
-        base_z = z * dB_dvmec
-        base_nu = nu * dB_dvmec
-        base_g = boozer_jac * dB_dvmec
-
-        def project_cos(field: jnp.ndarray) -> jnp.ndarray:
-            return fourier_factor * jnp.einsum("ij,i->j", tcos_modes, field)
-
-        def project_sin(field: jnp.ndarray) -> jnp.ndarray:
-            return fourier_factor * jnp.einsum("ij,i->j", tsin_modes, field)
-
-        bmnc_b = project_cos(base_b)
-        rmnc_b = project_cos(base_r)
-        zmns_b = project_sin(base_z)
-        numns_b = project_sin(base_nu)
-        gmnc_b = project_cos(base_g)
+        cos_p = _cos_project(
+            *_zeta_contract(jnp.stack([base_b, base_r, base_g], axis=-1)))
+        sin_p = _sin_project(
+            *_zeta_contract(jnp.stack([base_z, base_nu], axis=-1)))
+        bmnc_b, rmnc_b, gmnc_b = cos_p.T
+        zmns_b, numns_b = sin_p.T
         zeros = jnp.zeros_like(bmnc_b)
-        if constants.asym:
-            bmns_b = project_sin(base_b)
-            rmns_b = project_sin(base_r)
-            zmnc_b = project_cos(base_z)
-            numnc_b = project_cos(base_nu)
-            gmns_b = project_sin(base_g)
-        else:
-            bmns_b = zeros
-            rmns_b = zeros
-            zmnc_b = zeros
-            numnc_b = zeros
-            gmns_b = zeros
+        bmns_b = rmns_b = zmnc_b = numnc_b = gmns_b = zeros
 
     return (
         bmnc_b,
@@ -669,7 +584,7 @@ def booz_xform_jax_impl(
     ``plan`` (from :func:`prepare_booz_xform_plan`) supplies the prebuilt
     per-resolution tables and its own config; ``config`` alone controls
     execution with tables built inline. With neither, the legacy environment
-    variables act as the config defaults.
+    variable acts as the config default.
     """
     ns_b_full = int(rmnc.shape[0])
     if surface_indices is not None:
@@ -702,7 +617,7 @@ def booz_xform_jax_impl(
             mboz=constants.mboz, nboz=constants.nboz)
         tables = _build_tables(constants, grids, xm, xn, xm_nyq, xn_nyq,
                                trig_f32=cfg.trig_f32)
-    fourier_mode, trig_f32 = cfg.fourier_mode, cfg.trig_f32
+    trig_f32 = cfg.trig_f32
     tcos_non, tsin_non = tables["tcos_non"], tables["tsin_non"]
     tcos_nyq, tsin_nyq = tables["tcos_nyq"], tables["tsin_nyq"]
     m_non_f, n_non_f = tables["m_non_f"], tables["n_non_f"]
@@ -754,7 +669,6 @@ def booz_xform_jax_impl(
             bmns=_bmns,
             bsubumns=_bsubumns,
             bsubvmns=_bsubvmns,
-            fourier_mode=fourier_mode,
             trig_f32=trig_f32,
         )
 
@@ -772,9 +686,7 @@ def booz_xform_jax_impl(
         bsubumnc, bsubvmnc, iota, bmns_in, bsubumns_in, bsubvmns_in,
     )
     n_surf = int(rmnc.shape[0])
-    chunk = _resolve_surface_chunk(
-        cfg, constants, n_surf, mn_non=int(m_non_f.shape[0]),
-        mn_nyq=int(m_nyq_f.shape[0]), mn_boz=int(m_b.shape[0]))
+    chunk = _resolve_surface_chunk(cfg, constants, n_surf)
     if chunk >= n_surf:
         outputs = vmap_fn(*inputs)
     else:

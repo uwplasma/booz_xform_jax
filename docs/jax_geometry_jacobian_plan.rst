@@ -71,11 +71,10 @@ Milestones
    Jacobians reasonable.
 
 4. Performance modes
-   Execution is configured explicitly through ``BoozerConfig`` (fourier
-   mode, trig precision, ``surface_chunk``, optional memory budget); the
-   legacy environment variables (``BOOZ_XFORM_JAX_FOURIER_MODE``,
-   ``BOOZ_XFORM_JAX_TRIG_F32``) act only as defaults when no config is
-   passed. ``prepare_booz_xform_plan`` builds the per-resolution mode and
+   Execution is configured explicitly through ``BoozerConfig`` (trig
+   precision, ``surface_chunk``, optional memory budget); the legacy
+   environment variable (``BOOZ_XFORM_JAX_TRIG_F32``) acts only as a
+   default when no config is passed. ``prepare_booz_xform_plan`` builds the per-resolution mode and
    trig tables once, cached and reusable across surfaces, equilibrium
    iterates, and optimization steps. ``surface_chunk`` bounds how many
    surfaces one compiled contraction batches (``lax.map`` over fixed-size
@@ -92,7 +91,7 @@ Milestones
    Every geometry output used by downstream codes should have:
 
    - parity against ``Booz_xform.run`` on bundled VMEC cases,
-   - vectorized-versus-streamed parity,
+   - separable-versus-dense projection parity (values and JVP/VJP),
    - JIT-versus-non-JIT parity where practical,
    - finite-gradient tests through representative scalar objectives,
    - NetCDF name compatibility checks for ``gmn_b``.
@@ -103,7 +102,8 @@ Milestones
    ``bmns_b``, ``rmns_b``, ``zmnc_b``, ``numnc_b``, ``pmnc_b``, and ``gmns_b``
    in addition to the symmetric spectra. The validation suite compares these
    arrays against the bundled asymmetric BOOZ_XFORM reference file and checks
-   vectorized, streamed, JIT, and autodiff paths.
+   the separable projection against a dense reference, plus JIT and autodiff
+   paths.
 
 Downstream FAX Contract
 -----------------------

@@ -47,8 +47,6 @@ def _case(filename, mboz):
 
 
 def test_config_validates_inputs():
-    with pytest.raises(ValueError, match="fourier_mode"):
-        BoozerConfig(mboz=4, nboz=4, fourier_mode="fft")
     with pytest.raises(ValueError, match="surface_chunk"):
         BoozerConfig(mboz=4, nboz=4, surface_chunk="half")
     with pytest.raises(ValueError, match="surface_chunk"):
@@ -57,13 +55,10 @@ def test_config_validates_inputs():
         BoozerConfig(mboz=4, nboz=4, memory_budget_bytes=0)
 
 
-def test_from_env_reads_the_legacy_variables(monkeypatch):
-    monkeypatch.setenv("BOOZ_XFORM_JAX_FOURIER_MODE", "streamed")
+def test_from_env_reads_the_legacy_variable(monkeypatch):
     monkeypatch.setenv("BOOZ_XFORM_JAX_TRIG_F32", "1")
     config = BoozerConfig.from_env(mboz=6, nboz=6)
-    assert config.fourier_mode == "streamed"
     assert config.trig_f32 is True
-    monkeypatch.delenv("BOOZ_XFORM_JAX_FOURIER_MODE")
     monkeypatch.delenv("BOOZ_XFORM_JAX_TRIG_F32")
     assert BoozerConfig.from_env(mboz=6, nboz=6) == BoozerConfig(
         mboz=6, nboz=6)
@@ -154,22 +149,13 @@ def test_derivatives_agree_through_the_chunked_path():
 def test_auto_chunk_policy_is_deterministic_and_budgeted():
     _bx, config, plan, arrays, static = _case("wout_li383_1.4m.nc", 6)
     constants = plan.constants
-    mn_non = int(plan.tables["m_non_f"].shape[0])
-    mn_nyq = int(plan.tables["m_nyq_f"].shape[0])
-    mn_boz = int(plan.grids.xm_b.size)
     per_surface = 4 * 8 * constants.ntheta * constants.nzeta * (
-        mn_non + mn_nyq + mn_boz)
+        2 * (constants.mboz + constants.nboz + 2) + 10 * (constants.nboz + 1))
     budgeted = BoozerConfig(mboz=6, nboz=6,
                             memory_budget_bytes=3 * per_surface)
-    chunk = jax_api._resolve_surface_chunk(
-        budgeted, constants, 12, mn_non=mn_non, mn_nyq=mn_nyq, mn_boz=mn_boz)
-    assert chunk == 3
+    assert jax_api._resolve_surface_chunk(budgeted, constants, 12) == 3
     # No budget: auto batches everything (the legacy behaviour).
-    assert jax_api._resolve_surface_chunk(
-        config, constants, 12, mn_non=mn_non, mn_nyq=mn_nyq,
-        mn_boz=mn_boz) == 12
+    assert jax_api._resolve_surface_chunk(config, constants, 12) == 12
     # A budget below one surface still makes progress.
     tiny = BoozerConfig(mboz=6, nboz=6, memory_budget_bytes=1)
-    assert jax_api._resolve_surface_chunk(
-        tiny, constants, 12, mn_non=mn_non, mn_nyq=mn_nyq,
-        mn_boz=mn_boz) == 1
+    assert jax_api._resolve_surface_chunk(tiny, constants, 12) == 1
