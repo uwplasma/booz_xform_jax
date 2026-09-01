@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "booz_xform_jax"
-version = "0.1.1"
+version = "0.2.0"
 description = "Pure Python JAX implementation of the Boozer coordinate transformation"
 readme = "README.md"
 authors = [{ name = "UWPlasma contributors" }]
