@@ -111,3 +111,20 @@ determined by wheel availability for the dependencies:
 
 The project CI validates Linux on Python 3.10, 3.11, and 3.12. See the release
 notes or CI badges for the exact tested combinations once publishing is set up.
+
+
+Magnetic objectives
+-------------------
+
+Call ``booz_xform_jax_impl(..., magnetic_only=True)`` when an objective needs
+only ``bmnc_b`` and ``bmns_b``. The result retains mode, surface, iota and
+Boozer-current metadata; geometry and Jacobian spectrum keys are omitted.
+Treat ``magnetic_only`` as static when passing it directly through ``jax.jit``.
+The default still returns every spectrum using the original contractions.
+
+For this opt-in path, long CUDA quadrature reductions use partial sums over
+at most 512 points per block. This improves GPU occupancy without changing
+quadrature nodes, Fourier modes or normalization. Floating-point summation
+order can differ. CPU, short reductions and large mode matrices keep direct
+contractions. Forward and reverse differentiation follow the same formulas;
+resolution-convergence checks remain necessary for either execution path.

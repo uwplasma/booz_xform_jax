@@ -367,6 +367,43 @@ def prepare_booz_xform_constants_from_inputs(
     )
 
 
+def _project_modes(theta, weighted_zeta):
+    """Project mapped angles, splitting long CUDA reductions for occupancy."""
+    def direct(left, right):
+        return jnp.einsum("im,inf->mnf", left, right)
+
+    points, poloidal = theta.shape
+    toroidal = weighted_zeta.shape[1]
+    # Small reductions and large output matrices already expose sufficient work.
+    # Bound partial results to at most 64x64 modes per quadrature block.
+    if points <= 2048 or max(poloidal, toroidal) > 64:
+        return direct(theta, weighted_zeta)
+
+    def split(left, right):
+        blocks = (points + 511) // 512
+        count = (points + blocks - 1) // blocks
+        padding = count * blocks - points
+        left = jnp.pad(left, ((0, padding), (0, 0))).reshape(
+            blocks, count, poloidal)
+
+        def field_projection(field):
+            field = jnp.pad(field, ((0, padding), (0, 0))).reshape(
+                blocks, count, toroidal)
+            partial = jnp.einsum("bim,bin->bmn", left, field,
+                                 precision=jax.lax.Precision.HIGHEST)
+            return jnp.sum(partial, axis=0)
+
+        # The magnetic path supplies one field, sharing theta across blocks.
+        return jnp.stack([field_projection(right[:, :, field])
+                          for field in range(right.shape[2])], axis=-1)
+
+    # Select at lowering time, including explicit CPU JIT on a GPU host.
+    dispatch = getattr(jax.lax, "platform_dependent", None)
+    if dispatch is None:  # Older JAX retains the exact direct contraction.
+        return direct(theta, weighted_zeta)
+    return dispatch(theta, weighted_zeta, cuda=split, default=direct)
+
+
 def _surface_transform(
     rmnc: jnp.ndarray,
     rmns: jnp.ndarray,
@@ -398,6 +435,7 @@ def _surface_transform(
     bsubumns: Optional[jnp.ndarray] = None,
     bsubvmns: Optional[jnp.ndarray] = None,
     trig_f32: bool = False,
+    magnetic_only: bool = False,
 ) -> Tuple[jnp.ndarray, ...]:
     """Compute Boozer spectra for a single surface."""
     nfp = constants.nfp
@@ -508,15 +546,27 @@ def _surface_transform(
         return (cosn_b[:, :, None] * fields[:, None, :],
                 sinn_b[:, :, None] * fields[:, None, :])
 
+    def contract(left, right):
+        if magnetic_only:
+            return _project_modes(left, right)
+        return jnp.einsum("im,inf->mnf", left, right)
+
     def _cos_project(yc, ys):
-        cc = jnp.einsum("im,inf->mnf", cosm_b, yc)
-        ss = jnp.einsum("im,inf->mnf", sinm_b, ys)
+        cc = contract(cosm_b, yc)
+        ss = contract(sinm_b, ys)
         return ff * (cc[m_b, abs_n_b] + sign_v[:, None] * ss[m_b, abs_n_b])
 
     def _sin_project(yc, ys):
-        sc = jnp.einsum("im,inf->mnf", sinm_b, yc)
-        cs = jnp.einsum("im,inf->mnf", cosm_b, ys)
+        sc = contract(sinm_b, yc)
+        cs = contract(cosm_b, ys)
         return ff * (sc[m_b, abs_n_b] - sign_v[:, None] * cs[m_b, abs_n_b])
+
+    if magnetic_only:
+        yc, ys = _zeta_contract(base_b[:, None])
+        magnetic_cosine = _cos_project(yc, ys)[:, 0]
+        magnetic_sine = (_sin_project(yc, ys)[:, 0] if constants.asym
+                         else jnp.zeros_like(magnetic_cosine))
+        return magnetic_cosine, magnetic_sine, Boozer_I, Boozer_G
 
     if constants.asym:
         yc, ys = _zeta_contract(
@@ -575,6 +625,7 @@ def booz_xform_jax_impl(
     surface_indices: Optional[jnp.ndarray] = None,
     config: Optional[BoozerConfig] = None,
     plan: Optional[BoozerPlan] = None,
+    magnetic_only: bool = False,
 ) -> dict:
     """JAX-native Boozer transform over all (or selected) surfaces.
 
@@ -585,6 +636,13 @@ def booz_xform_jax_impl(
     per-resolution tables and its own config; ``config`` alone controls
     execution with tables built inline. With neither, the legacy environment
     variable acts as the config default.
+
+    ``magnetic_only=True`` returns only ``bmnc_b``, ``bmns_b`` and the
+    shared mode/surface/current metadata, omitting geometry and Jacobian
+    spectra. This static option avoids unused projections for magnetic
+    objectives and uses split quadrature reductions on CUDA. When jitting
+    this function directly, include ``magnetic_only`` in ``static_argnames``.
+    The default full-output calculation is unchanged.
     """
     ns_b_full = int(rmnc.shape[0])
     if surface_indices is not None:
@@ -670,6 +728,7 @@ def booz_xform_jax_impl(
             bsubumns=_bsubumns,
             bsubvmns=_bsubvmns,
             trig_f32=trig_f32,
+            magnetic_only=magnetic_only,
         )
 
     vmap_fn = jax.vmap(_surf)
@@ -708,20 +767,23 @@ def booz_xform_jax_impl(
         outputs = tuple(
             o.reshape((n_chunks * chunk,) + o.shape[2:])[:n_surf]
             for o in stacked)
-    (
-        bmnc_b,
-        bmns_b,
-        rmnc_b,
-        rmns_b,
-        zmnc_b,
-        zmns_b,
-        numnc_b,
-        numns_b,
-        gmnc_b,
-        gmns_b,
-        Boozer_I,
-        Boozer_G,
-    ) = outputs
+    if magnetic_only:
+        bmnc_b, bmns_b, Boozer_I, Boozer_G = outputs
+    else:
+        (
+            bmnc_b,
+            bmns_b,
+            rmnc_b,
+            rmns_b,
+            zmnc_b,
+            zmns_b,
+            numnc_b,
+            numns_b,
+            gmnc_b,
+            gmns_b,
+            Boozer_I,
+            Boozer_G,
+        ) = outputs
 
     ns_b = bmnc_b.shape[0]
     if surface_indices is None:
@@ -729,7 +791,7 @@ def booz_xform_jax_impl(
     else:
         jlist = surface_indices + 2
 
-    return {
+    result = {
         "nfp_b": jnp.asarray(constants.nfp),
         "ns_b": jnp.asarray(ns_b_full),
         "ixm_b": jnp.asarray(grids.xm_b),
@@ -737,22 +799,18 @@ def booz_xform_jax_impl(
         "iota_b": iota,
         "buco_b": Boozer_I,
         "bvco_b": Boozer_G,
-        "rmnc_b": rmnc_b,
-        "rmns_b": rmns_b,
-        "zmnc_b": zmnc_b,
-        "zmns_b": zmns_b,
-        "numnc_b": numnc_b,
-        "numns_b": numns_b,
-        "pmnc_b": -numnc_b,
-        "pmns_b": -numns_b,
         "bmnc_b": bmnc_b,
         "bmns_b": bmns_b,
-        "gmnc_b": gmnc_b,
-        "gmns_b": gmns_b,
-        # BOOZ_XFORM/netCDF-compatible spelling for the Jacobian harmonics.
-        "gmn_b": gmnc_b,
         "jlist": jlist,
     }
+    if not magnetic_only:
+        result.update(
+            rmnc_b=rmnc_b, rmns_b=rmns_b, zmnc_b=zmnc_b, zmns_b=zmns_b,
+            numnc_b=numnc_b, numns_b=numns_b,
+            pmnc_b=-numnc_b, pmns_b=-numns_b,
+            gmnc_b=gmnc_b, gmns_b=gmns_b, gmn_b=gmnc_b)
+    return result
+
 
 
 def booz_xform_from_inputs(
