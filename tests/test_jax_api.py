@@ -292,10 +292,11 @@ def _plan_case(filename, mboz):
 
 
 @pytest.mark.parametrize("filename,mboz", [
-    ("wout_li383_1.4m.nc", 8),
-    ("wout_up_down_asymmetric_tokamak.nc", 6),
+    ("wout_li383_1.4m.nc", 16),
+    ("wout_up_down_asymmetric_tokamak.nc", 16),
 ])
-def test_separable_projection_matches_dense_reference(filename, mboz):
+@pytest.mark.parametrize("magnetic_only", [False, True])
+def test_separable_projection_matches_dense_reference(filename, mboz, magnetic_only):
     """The separable contraction is a reorganization of the dense one, so
     values and derivatives must agree to double-rounding tolerances."""
     plan, arrays, static = _plan_case(filename, mboz)
@@ -303,9 +304,14 @@ def test_separable_projection_matches_dense_reference(filename, mboz):
     indices = jnp.arange(0, min(ns, 9))
 
     out = booz_xform_jax_impl(**arrays, **static,
-                              surface_indices=indices, plan=plan)
+                              surface_indices=indices, plan=plan, magnetic_only=magnetic_only)
     ref = _dense_reference(plan, arrays, indices)
+    if magnetic_only:
+        assert set(out) == {"bmnc_b", "bmns_b", "nfp_b", "ns_b", "ixm_b", "ixn_b",
+                            "iota_b", "buco_b", "bvco_b", "jlist"}
     for key, expected in ref.items():
+        if magnetic_only and key not in {"bmnc_b", "bmns_b"}:
+            continue
         np.testing.assert_allclose(
             np.asarray(out[key]), np.asarray(expected),
             rtol=1e-10, atol=1e-13, err_msg=key)
@@ -313,7 +319,7 @@ def test_separable_projection_matches_dense_reference(filename, mboz):
     def kernel_fn(bmnc):
         return booz_xform_jax_impl(
             **{**arrays, "bmnc": bmnc}, **static,
-            surface_indices=indices, plan=plan)["bmnc_b"]
+            surface_indices=indices, plan=plan, magnetic_only=magnetic_only)["bmnc_b"]
 
     def reference_fn(bmnc):
         return _dense_reference(plan, {**arrays, "bmnc": bmnc},
@@ -571,3 +577,45 @@ def test_jacobian_harmonics_have_finite_gradients_wrt_covariant_field():
     assert grad_bsubumnc.shape == bsubumnc.shape
     assert np.all(np.isfinite(np.asarray(grad_bsubumnc)))
     assert float(jnp.linalg.norm(grad_bsubumnc)) > 0.0
+
+
+@pytest.mark.parametrize("points,modes", [(19, (3, 4)), (2051, (3, 4)),
+                                          (2051, (65, 2))])
+def test_projection_values_and_both_input_derivatives(points, modes):
+    """Check padding, the small/large-matrix guards, and both AD arguments."""
+    from booz_xform_jax.jax_api import _project_modes
+
+    rng = np.random.default_rng(18)
+    theta = jnp.asarray(rng.normal(size=(points, modes[0])))
+    fields = jnp.asarray(rng.normal(size=(points, modes[1], 3)))
+    direction = (jnp.sin(theta), jnp.cos(fields))
+    def reference(a, b):
+        return jnp.einsum("im,inf->mnf", a, b)
+
+    for device in (jax.devices("cpu")[0], *[d for d in jax.devices()
+                                           if d.platform == "gpu"]):
+        with jax.default_device(device):
+            inputs = tuple(jax.device_put(x, device) for x in (theta, fields))
+            tangents = tuple(jax.device_put(x, device) for x in direction)
+            candidate = jax.jit(_project_modes, device=device)
+            expected = reference(*inputs)
+            actual = candidate(*inputs)
+            np.testing.assert_allclose(actual, expected, rtol=2e-12, atol=2e-12)
+            tangent = jax.jvp(candidate, inputs, tangents)[1]
+            tangent_ref = jax.jvp(reference, inputs, tangents)[1]
+            np.testing.assert_allclose(tangent, tangent_ref, rtol=2e-12, atol=2e-12)
+            cotangent = jnp.cos(expected)
+            reverse = jax.vjp(candidate, *inputs)[1](cotangent)
+            reverse_ref = jax.vjp(reference, *inputs)[1](cotangent)
+            for value, ref in zip(reverse, reverse_ref):
+                np.testing.assert_allclose(value, ref, rtol=2e-12, atol=2e-12)
+
+
+def test_projection_without_platform_dispatch(monkeypatch):
+    """Older JAX can still evaluate the opt-in magnetic output exactly."""
+    from booz_xform_jax.jax_api import _project_modes
+
+    theta, fields = jnp.ones((2051, 3)), jnp.ones((2051, 4, 1))
+    monkeypatch.setattr(jax.lax, "platform_dependent", None, raising=False)
+    np.testing.assert_array_equal(_project_modes(theta, fields),
+                                  np.full((3, 4, 1), 2051.))
