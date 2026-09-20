@@ -11,14 +11,19 @@ keeps the familiar ``xbooz_xform`` workflow for command-line use while also
 providing a differentiable Python and JAX API for optimization and analysis
 pipelines.
 
+The two codes agree to machine precision. On the small equilibria bundled with
+this repository ``booz_xform_jax`` is slower than the compiled reference and
+uses more memory; see the measured comparison in the README for the numbers and
+for what the JAX implementation buys instead. Both figures below are produced
+by ``tools/readme_compare.py``.
+
 .. image:: comparison_runtime.png
-   :alt: Runtime comparison between booz_xform_jax and xbooz_xform
+   :alt: End-to-end runtime of booz_xform_jax and xbooz_xform on the bundled cases
    :width: 100%
 
 .. image:: comparison_memory.png
-   :alt: Memory comparison between booz_xform_jax and xbooz_xform
-   :width: 70%
-   :align: center
+   :alt: Peak process memory of booz_xform_jax and xbooz_xform on the bundled cases
+   :width: 100%
 
 What This Package Covers
 ------------------------

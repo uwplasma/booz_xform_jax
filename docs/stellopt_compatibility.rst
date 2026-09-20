@@ -76,6 +76,25 @@ or equivalently::
 When the input file omits the surface list, the historical behavior is to
 transform all non-axis surfaces. ``booz_xform_jax`` preserves that default.
 
+.. warning::
+
+   Two reference implementations disagree about what the surface numbers in
+   this file mean, and the difference is silent: both programs run happily and
+   transform different surfaces.
+
+   The Fortran STELLOPT ``xbooz_xform`` reads them as ``jlist`` entries, which
+   are full-grid, 1-based, and relate to the internal half-grid selection as
+   ``jlist = compute_surfs + 2``. The C++ ``booz_xform`` reads the same numbers
+   as 0-based half-grid ``compute_surfs`` values directly, and its own help
+   text says so.
+
+   ``booz_xform_jax`` follows STELLOPT, so a given input file yields the same
+   ``jlist`` from ``booz_xform_jax`` and from the Fortran executable, and a
+   ``jlist`` two surfaces higher from the C++ executable. When comparing
+   against the C++ program, subtract two from each surface number in the input
+   file you give it. ``tools/readme_compare.py`` detects which convention a
+   reference binary uses and translates automatically.
+
 Output Format
 -------------
 
