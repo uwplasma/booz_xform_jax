@@ -68,7 +68,11 @@ Surface selection uses ``compute_surfs``:
 - the CLI reads full-grid indices from the ``in_booz`` file and maps them to
   half-grid indices,
 - the Python API accepts either explicit half-grid indices or normalized flux
-  values through :meth:`register_surfaces`,
+  values through :meth:`register_surfaces`, which must be called after the VMEC
+  data has been loaded and which adds to the current selection,
+- ``compute_surfs is None`` means "all surfaces"; reading a VMEC file leaves it
+  at ``None`` and ``run()`` expands it, so a registration made after the read
+  narrows the transform rather than being absorbed into an already-full list,
 - if no surface list is provided in the CLI input file, all non-axis surfaces
   are transformed.
 
