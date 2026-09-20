@@ -195,6 +195,14 @@ def _reference_unavailable_reason() -> str | None:
         )
     if not REFERENCE_BIN.exists():
         return f"Reference xbooz_xform does not exist: {REFERENCE_BIN}"
+    if _reference_is_this_package():
+        return (
+            f"The xbooz_xform at {REFERENCE_BIN} is booz_xform_jax's own console "
+            "script: this package installs xbooz_xform as an alias of its CLI, so "
+            "anything found on PATH after a plain install is this package itself, "
+            "and comparing against it would compare the package with itself. Set "
+            f"{REFERENCE_BIN_ENV} to a STELLOPT build."
+        )
     dialect, output = _reference_jlist_offset()
     if dialect is None:
         detail = " ".join(output.split())[:200]
@@ -210,6 +218,23 @@ def _reference_unavailable_reason() -> str | None:
             "to run the CLI parity suite."
         )
     return None
+
+
+def _reference_is_this_package() -> bool:
+    """True when the discovered binary is this package's own CLI.
+
+    ``pyproject.toml`` installs ``xbooz_xform`` as an alias of
+    ``booz_xform_jax.cli:main``, so after a plain ``pip install`` the name this
+    suite looks for on PATH resolves to the code under test. Comparing against
+    it would pass unconditionally and prove nothing.
+    """
+    proc = subprocess.run(
+        [str(REFERENCE_BIN), "-h"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return "booz_xform_jax" in ((proc.stdout or "") + (proc.stderr or ""))
 
 
 def _reference_jlist_offset() -> tuple[int | None, str]:
