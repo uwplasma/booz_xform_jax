@@ -581,11 +581,15 @@ def init_from_vmec(self, *args, s_in: Optional[_np.ndarray] = None) -> None:
     else:
         self.phip = self.chi = self.pres = self.phi = None
         self.toroidal_flux = 0.0
-    # Set default compute_surfs if not already set
-    if self.compute_surfs is None:
-        self.compute_surfs = list(range(ns_in))
-    else:
-        # Validate existing indices
+    # Surface selection is *not* materialised here. ``compute_surfs is None``
+    # is the documented way of saying "all half-grid surfaces", and the
+    # default is expanded lazily by :meth:`Booz_xform.run` /
+    # :meth:`Booz_xform.run_jax`. Filling it in eagerly here used to turn
+    # :meth:`Booz_xform.register_surfaces` - which *adds* to the current
+    # selection - into a silent no-op, because the selection already held
+    # every surface by the time the user got to choose (issue #3).
+    if self.compute_surfs is not None:
+        # Validate a selection the user made before loading the VMEC data.
         cs = list(self.compute_surfs)
         for idx in cs:
             if idx < 0 or idx >= ns_in:

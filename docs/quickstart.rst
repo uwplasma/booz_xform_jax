@@ -73,7 +73,17 @@ Key points:
 - ``read_wout(..., flux=True)`` also loads optional radial profiles such as
   ``phip``, ``chi``, ``pres``, and ``phi`` when present.
 - ``register_surfaces`` accepts either half-grid indices or normalized toroidal
-  flux values in ``[0, 1]``.
+  flux values in ``[0, 1]``. Integers are indices, not counts:
+  ``register_surfaces(10)`` selects the single surface with index 10. To spread
+  ``n`` surfaces over the plasma, pass flux values, e.g.
+  ``bx.register_surfaces(np.linspace(0.0, 1.0, n))``.
+- Call ``register_surfaces`` *after* loading the VMEC data; it validates the
+  surfaces against the equilibrium and raises ``RuntimeError`` if no data has
+  been read yet. Each call adds to the current selection, starting from the
+  default of all half-grid surfaces (``compute_surfs is None``), so the first
+  call narrows the transform to exactly the surfaces you register. Assigning
+  ``bx.compute_surfs`` directly works too, and matches the original
+  BOOZ_XFORM API.
 - ``run()`` stores the Boozer spectra on the object.
 - ``write_boozmn()`` emits a NetCDF file compatible with the modern
   ``boozmn`` format.

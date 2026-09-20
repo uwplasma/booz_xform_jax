@@ -235,7 +235,10 @@ class Booz_xform:
     compute_surfs : list[int] or None
         Indices of the half-grid surfaces on which to compute the
         Boozer transform. Indices run from 0 to ``ns_in-1``.
-        ``None`` (default) means “all surfaces”.
+        ``None`` (default) means “all surfaces”; reading a VMEC file
+        leaves it at ``None``, and :meth:`run` expands it to the full
+        list. Assign it directly, or call :meth:`register_surfaces`,
+        to select a subset.
 
     s_b : ndarray, shape (ns_b,)
         Radial coordinate values on the subset of surfaces selected
@@ -350,6 +353,10 @@ class Booz_xform:
 
     # Bookkeeping
     _prepared: bool = False  # whether mode lists and grids have been prepared
+    # Boozer resolution the cached mode lists / grids were built for, used to
+    # invalidate them when mboz, nboz, nfp or asym change between runs.
+    _mode_list_key: Optional[tuple] = field(default=None, repr=False)
+    _grid_key: Optional[tuple] = field(default=None, repr=False)
 
     # ------------------------------------------------------------------
     # Delegated methods from external modules
@@ -473,6 +480,23 @@ class Booz_xform:
         self.xm_b = _np.asarray(m_list, dtype=int)
         self.xn_b = _np.asarray(n_list, dtype=int)
         self.mnboz = len(self.xm_b)
+        self._mode_list_key = self._resolution_key()
+
+    def _resolution_key(self) -> tuple:
+        """Return the settings the cached mode lists and grids depend on."""
+        return (
+            None if self.mboz is None else int(self.mboz),
+            None if self.nboz is None else int(self.nboz),
+            int(self.nfp),
+            bool(self.asym),
+        )
+
+    def _mode_lists_stale(self) -> bool:
+        """True when the cached Boozer mode lists must be rebuilt."""
+        if self.mnboz is None or self.xm_b is None or self.xn_b is None:
+            return True
+        # Mode lists populated from a boozmn file carry no key; leave them be.
+        return self._mode_list_key is not None and self._mode_list_key != self._resolution_key()
 
     def _setup_grids(self) -> None:
         """
@@ -504,11 +528,12 @@ class Booz_xform:
           * ``self._nu2_b``   – number of θ rows used in the
             symmetric case.
         """
-        if self._prepared:
-            return
-
         if self.mboz is None or self.nboz is None:
             raise RuntimeError("mboz and nboz must be set before setting up grids")
+
+        key = self._resolution_key()
+        if self._prepared and self._grid_key == key:
+            return
 
         # Nominal angular resolutions (full θ range)
         ntheta_full = 2 * (2 * self.mboz + 1)
@@ -540,6 +565,7 @@ class Booz_xform:
         self._nzeta = int(nzeta_full)
         self._n_theta_zeta = int(nu3_b * nzeta_full)
         self._nu2_b = nu2_b
+        self._grid_key = key
         self._prepared = True
 
     # ------------------------------------------------------------------
@@ -614,7 +640,7 @@ class Booz_xform:
                 raise RuntimeError("nboz is not set and ntor is not available")
             self.nboz = int(self.ntor)
 
-        if self.mnboz is None or self.xm_b is None or self.xn_b is None:
+        if self._mode_lists_stale():
             self._prepare_mode_lists()
 
         self._setup_grids()
@@ -1163,7 +1189,7 @@ class Booz_xform:
                 raise RuntimeError("nboz is not set and ntor is not available")
             self.nboz = int(self.ntor)
 
-        if self.mnboz is None or self.xm_b is None or self.xn_b is None:
+        if self._mode_lists_stale():
             self._prepare_mode_lists()
 
         constants, grids = prepare_booz_xform_constants(
@@ -1234,32 +1260,60 @@ class Booz_xform:
         """
         Register one or more surfaces on which to compute the transform.
 
-        This method mirrors the original C++ ``register`` routine. It
-        accepts either integer half-grid indices or floating-point
-        radial coordinate values in normalised toroidal flux space.
+        The VMEC data must already be loaded (via :meth:`read_wout`,
+        :meth:`read_wout_data` or :meth:`init_from_vmec`), because the
+        registered surfaces are validated against ``ns_in`` and, for
+        floating-point arguments, resolved against ``s_in``.
 
         Parameters
         ----------
         s : int, float, or iterable of these
             Surfaces to register:
 
-              * If an integer, it is interpreted as an index on the
-                VMEC half grid (0 ≤ index < ns_in).
+              * If an integer, it is interpreted as an **index** on the
+                VMEC half grid (0 ≤ index < ns_in). Note that this is an
+                index, not a count: ``register_surfaces(10)`` selects the
+                single surface with index 10, not the first ten surfaces.
               * If a float, it should lie in [0, 1] and is interpreted
                 as a normalised toroidal flux value. We then choose
                 the nearest index based on ``self.s_in``.
 
+        Raises
+        ------
+        RuntimeError
+            If called before the VMEC data has been loaded.
+        ValueError
+            If a surface falls outside the valid index range, or a
+            floating-point value falls outside [0, 1].
+
         Notes
         -----
         * Any new surfaces are **appended** to the existing
-          :attr:`compute_surfs` list (duplicates are removed).
-        * Surfaces outside the valid index range produce a
-          :class:`ValueError`.
+          :attr:`compute_surfs` list (duplicates are removed). Starting
+          from the default selection (``compute_surfs is None``, meaning
+          "all surfaces"), the first call therefore *narrows* the
+          transform down to exactly the surfaces you register.
+        * To select ``n`` surfaces spread over the plasma, pass
+          normalised flux values, e.g.
+          ``bx.register_surfaces(np.linspace(0.0, 1.0, n))``.
         * The method does not perform the transform; you must call
           :meth:`run` afterwards.
+        * There is no ``register`` routine in the original C++
+          ``booz_xform``; there, surface selection is a direct
+          assignment to ``compute_surfs``. That form works here too.
         """
-        # Normalise input to a list
-        if isinstance(s, (int, float)):
+        if self.ns_in is None:
+            raise RuntimeError(
+                "register_surfaces() requires the VMEC data to be loaded first; "
+                "call read_wout(), read_wout_data() or init_from_vmec() before "
+                "registering surfaces"
+            )
+
+        # Normalise input to a list. Scalars include NumPy scalars and
+        # 0-d arrays, which are what callers typically end up with.
+        # Iterables are listed element-wise so that a mixed list of
+        # indices and flux values keeps each element's own type.
+        if _np.ndim(s) == 0:
             ss = [s]
         else:
             ss = list(s)
@@ -1270,14 +1324,19 @@ class Booz_xform:
             current = set(self.compute_surfs)
 
         for val in ss:
-            if isinstance(val, int):
+            if isinstance(val, (int, _np.integer)):
                 # Integer: treated as direct index
-                idx = val
+                idx = int(val)
             else:
                 # Float: map to nearest index based on s_in
                 sval = float(val)
                 if sval < 0.0 or sval > 1.0:
                     raise ValueError("Normalized toroidal flux values must lie in [0,1]")
+                if self.s_in is None:
+                    raise RuntimeError(
+                        "s_in is not available; load the VMEC data before registering "
+                        "surfaces by normalised toroidal flux"
+                    )
                 idx = int(_np.argmin(_np.abs(self.s_in - sval)))  # type: ignore[arg-type]
 
             if idx < 0 or idx >= int(self.ns_in):
