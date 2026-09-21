@@ -31,7 +31,9 @@ What This Package Covers
 - VMEC ``wout`` ingestion through :meth:`booz_xform_jax.Booz_xform.read_wout`
   and :meth:`booz_xform_jax.Booz_xform.read_wout_data`.
 - STELLOPT-style ``in_booz.*`` command-line execution through
-  ``booz_xform_jax``, ``xbooz_xform``, and ``xbooz_xform_jax``.
+  ``booz_xform_jax``, ``xbooz_xform``, and ``xbooz_xform_jax``, checked in
+  continuous integration against the reference ``boozmn`` outputs shipped by
+  the original project.
 - Boozer-spectrum computation, ``boozmn`` NetCDF writing, and round-trip file
   reading.
 - JAX-native functional transforms for JIT compilation, batching, and

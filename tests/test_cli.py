@@ -278,6 +278,66 @@ requires_reference = pytest.mark.skipif(
 )
 
 
+BUNDLED_CLI_CASES = [
+    ("booz_in.li383_1.4m", "wout_li383_1.4m.nc", "boozmn_li383_1.4m.nc", False),
+    (
+        "booz_in.LandremanSenguptaPlunk_section5p3",
+        "wout_LandremanSenguptaPlunk_section5p3.nc",
+        "boozmn_LandremanSenguptaPlunk_section5p3.nc",
+        False,
+    ),
+    (
+        "booz_in.up_down_asymmetric_tokamak",
+        "wout_up_down_asymmetric_tokamak.nc",
+        "boozmn_up_down_asymmetric_tokamak.nc",
+        True,
+    ),
+    (
+        "booz_in.circular_tokamak",
+        "wout_circular_tokamak.nc",
+        "boozmn_circular_tokamak.nc",
+        True,
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("input_name", "wout_name", "output_name", "expect_missing_jlist"),
+    BUNDLED_CLI_CASES,
+)
+def test_cli_reproduces_committed_reference_output(
+    tmp_path: Path, input_name: str, wout_name: str, output_name: str, expect_missing_jlist: bool
+) -> None:
+    """Drive the legacy CLI and compare against the committed reference file.
+
+    ``tests/test_files/boozmn_*.nc`` are the reference outputs shipped by the
+    original ``booz_xform`` project, byte-for-byte, and each one corresponds to
+    running the bundled ``booz_in.*`` file of the same name: the resolutions and
+    the ``jlist`` in the file are exactly what this CLI derives from that input.
+    Comparing against them verifies the whole legacy path - input parsing, the
+    STELLOPT resolution rules, surface selection, the transform and the boozmn
+    writer - without needing a reference executable, which is what makes the
+    parity claim hold in CI rather than skipping there.
+    """
+    _materialize_case(
+        tmp_path,
+        input_name=input_name,
+        input_source=TEST_DIR / input_name,
+        wout_source=TEST_DIR / wout_name,
+    )
+    proc = _run_jax_cli(tmp_path, input_name, screen_flag="F")
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+
+    produced = tmp_path / output_name
+    assert produced.exists(), proc.stderr or proc.stdout
+    if expect_missing_jlist:
+        assert "No jlist data was found in Boozer input file." in proc.stdout
+    else:
+        assert proc.stdout.strip() == ""
+
+    _compare_boozmn_files(TEST_DIR / output_name, produced)
+
+
 @pytest.mark.parametrize(
     ("input_name", "wout_name", "output_name", "expect_missing_jlist"),
     [

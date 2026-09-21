@@ -156,3 +156,21 @@ ported with very little change:
 - switch the executable to ``booz_xform_jax`` or ``xbooz_xform``,
 - use the JAX API only when differentiability or tight Python integration is
   needed.
+
+How This Compatibility Is Verified
+----------------------------------
+
+``tests/test_cli.py`` checks the legacy path end to end. Each bundled
+``booz_in.*`` file is fed to the ``booz_xform_jax`` command line, and the
+``boozmn`` file it writes is compared against the reference output of the same
+name in ``tests/test_files``. Those reference files are shipped byte-for-byte
+by the original ``booz_xform`` project, and each one corresponds to the bundled
+input file of the same name, so the comparison covers input parsing, the
+STELLOPT resolution rules, surface selection, the transform itself and the
+``boozmn`` writer, to a relative tolerance of ``1e-12``.
+
+These checks need no reference executable and therefore run in continuous
+integration on every change. When a STELLOPT ``xbooz_xform`` *is* available,
+pointing ``BOOZ_XFORM_REFERENCE_BIN`` at it adds a second, stronger comparison
+that runs both programs side by side on the same inputs. That live comparison
+is an extra, not the only evidence.
