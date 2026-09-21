@@ -481,6 +481,72 @@ def test_run_jax_asymmetric_matches_reference_run_and_jit():
     np.testing.assert_allclose(np.asarray(out["gmn_b"]), np.asarray(out["gmnc_b"]), rtol=0.0, atol=0.0)
 
 
+def test_run_jax_symmetric_matches_reference_run_and_jit():
+    """The jitted path was only ever exercised on an asymmetric tokamak.
+
+    Stellarator symmetry takes a different branch through the transform: the
+    theta grid is folded onto [0, pi] with half-weighted end rows and only the
+    cosine spectra are produced. Nothing checked that branch under jax.jit, so
+    a value that became concrete during tracing would have gone unnoticed for
+    every symmetric equilibrium, which is most of them.
+    """
+    b = Booz_xform()
+    b.read_wout(os.path.join(TEST_DIR, "wout_li383_1.4m.nc"))
+    b.mboz = 10
+    b.nboz = 6
+    b.compute_surfs = [0, 5, 10]
+    b.run()
+
+    out = b.run_jax(jit=False)
+    out_jit = b.run_jax(jit=True)
+
+    assert not bool(b.asym)
+    for name in ["bmnc_b", "rmnc_b", "zmns_b", "numns_b", "gmnc_b"]:
+        expected = np.asarray(getattr(b, name)).T
+        np.testing.assert_allclose(np.asarray(out[name]), expected, rtol=5e-6, atol=1e-8)
+        np.testing.assert_allclose(
+            np.asarray(out_jit[name]), np.asarray(out[name]), rtol=5e-10, atol=5e-12
+        )
+
+    np.testing.assert_array_equal(
+        np.asarray(out_jit["jlist"]), np.asarray(b.compute_surfs) + 2
+    )
+    np.testing.assert_allclose(
+        np.asarray(out_jit["pmns_b"]), -np.asarray(out_jit["numns_b"]), rtol=0.0, atol=0.0
+    )
+    np.testing.assert_allclose(
+        np.asarray(out_jit["gmn_b"]), np.asarray(out_jit["gmnc_b"]), rtol=0.0, atol=0.0
+    )
+
+
+@pytest.mark.parametrize("wout_name", ["wout_li383_1.4m.nc", "wout_up_down_asymmetric_tokamak.nc"])
+def test_run_jax_jit_handles_a_changing_surface_count(wout_name):
+    """Retrace the jitted transform for a second surface count on one object.
+
+    A single jitted call cannot distinguish a traced value from one that was
+    baked in while tracing. Running the same object again with a different
+    number of surfaces forces a retrace and catches exactly that.
+    """
+    b = Booz_xform()
+    b.read_wout(os.path.join(TEST_DIR, wout_name))
+    b.mboz = 6
+    b.nboz = 3 if wout_name.startswith("wout_li383") else 0
+
+    for surfaces in ([4], [0, 2, 5]):
+        b.compute_surfs = list(surfaces)
+        eager = b.run_jax(jit=False)
+        jitted = b.run_jax(jit=True)
+        # run_jax returns surface-major arrays: (ns_b, mnboz).
+        assert np.asarray(jitted["bmnc_b"]).shape[0] == len(surfaces)
+        np.testing.assert_array_equal(
+            np.asarray(jitted["jlist"]), np.asarray(surfaces) + 2
+        )
+        for name in ["bmnc_b", "rmnc_b", "zmns_b", "numns_b", "gmnc_b"]:
+            np.testing.assert_allclose(
+                np.asarray(jitted[name]), np.asarray(eager[name]), rtol=5e-10, atol=5e-12
+            )
+
+
 def test_asymmetric_jacobian_sine_harmonics_are_differentiable_wrt_bmod_spectrum():
     b = Booz_xform()
     b.read_wout(os.path.join(TEST_DIR, "wout_up_down_asymmetric_tokamak.nc"))
