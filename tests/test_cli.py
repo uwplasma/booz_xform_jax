@@ -1,4 +1,17 @@
-"""CLI parity tests against the legacy STELLOPT ``xbooz_xform`` executable."""
+"""CLI parity tests against the legacy STELLOPT ``xbooz_xform`` executable.
+
+The reference here is specifically the **Fortran STELLOPT** ``xbooz_xform``.
+The C++ ``booz_xform`` is not a drop-in substitute: it reads the surface
+numbers in a ``booz_in`` file as 0-based ``compute_surfs`` while STELLOPT, and
+``booz_xform_jax``, read them as ``jlist`` entries, which are the same surfaces
+plus two. Both programs accept the same file without complaint and transform
+different surfaces, so these tests probe the binary's convention and refuse to
+run against the wrong one rather than reporting a spurious difference.
+
+Point ``BOOZ_XFORM_REFERENCE_BIN`` at a STELLOPT build to run this suite. The
+external-equilibrium cases additionally need ``BOOZ_XFORM_EXTRA_WOUT_DIR`` to
+name a directory holding the wout files they use.
+"""
 
 from __future__ import annotations
 
@@ -15,9 +28,27 @@ from netCDF4 import Dataset
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_DIR = ROOT / "tests" / "test_files"
-REFERENCE_BIN = Path(
-    os.environ.get("BOOZ_XFORM_REFERENCE_BIN", str(Path.home() / "bin" / "xbooz_xform"))
-).expanduser()
+
+REFERENCE_BIN_ENV = "BOOZ_XFORM_REFERENCE_BIN"
+EXTRA_WOUT_DIR_ENV = "BOOZ_XFORM_EXTRA_WOUT_DIR"
+
+
+def _discover_reference_bin() -> Path | None:
+    """Find the reference executable without assuming any machine layout."""
+    from_env = os.environ.get(REFERENCE_BIN_ENV)
+    if from_env:
+        return Path(from_env).expanduser()
+    on_path = shutil.which("xbooz_xform")
+    return Path(on_path) if on_path else None
+
+
+def _extra_wout(name: str) -> Path | None:
+    """Locate an equilibrium that is not bundled with this repository."""
+    directory = os.environ.get(EXTRA_WOUT_DIR_ENV)
+    return Path(directory).expanduser() / name if directory else None
+
+
+REFERENCE_BIN = _discover_reference_bin()
 
 
 def _pythonpath_env() -> dict[str, str]:
@@ -49,11 +80,12 @@ def _run_reference_cli(tmp_path: Path, input_name: str, *, screen_flag: str = "F
         capture_output=True,
         text=True,
     )
-    if proc.returncode == 0:
-        return proc
-    stdout = proc.stdout or ""
-    stderr = proc.stderr or ""
-    if "Usage:  xbooz_xform <inputfile>" not in (stdout + stderr):
+    # The screen-output flag is a STELLOPT extension. The C++ booz_xform takes
+    # the input file alone and answers a second argument by printing its usage
+    # text and exiting *successfully*, so a returncode check alone never
+    # noticed and the binary was never actually driven. Retry whenever the
+    # output looks like usage, whatever the exit status.
+    if "Usage:" not in ((proc.stdout or "") + (proc.stderr or "")):
         return proc
     return subprocess.run(
         [str(REFERENCE_BIN), input_name],
@@ -103,18 +135,26 @@ def _materialize_case(
         raise ValueError("Either input_source or input_contents must be provided.")
 
     if not wout_source.exists():
-        pytest.skip(f"Missing reference wout file: {wout_source}")
+        pytest.skip(
+            f"Missing wout file {wout_source.name} in {wout_source.parent} "
+            f"(see {EXTRA_WOUT_DIR_ENV})"
+        )
     shutil.copy(wout_source, tmp_path / wout_source.name)
 
 
 def _assert_cli_parity(tmp_path: Path, *, input_name: str, output_name: str, expect_missing_jlist: bool = False) -> None:
     ref_proc = _run_reference_cli(tmp_path, input_name, screen_flag="F")
-    if ref_proc.returncode != 0:
-        pytest.skip(f"Reference xbooz_xform is not usable for this case:\n{ref_proc.stderr or ref_proc.stdout}")
+    combined = (ref_proc.stdout or "") + (ref_proc.stderr or "")
+    if ref_proc.returncode != 0 and "Usage:" in combined:
+        pytest.skip(f"Reference xbooz_xform rejected this input file:\n{combined}")
+    # Anything else is the reference failing on input it accepted, which is a
+    # result worth seeing rather than a reason to declare the test skipped.
+    assert ref_proc.returncode == 0, combined
 
     ref_output = tmp_path / output_name
-    if not ref_output.exists():
-        pytest.skip("Reference xbooz_xform did not produce a boozmn file for this case.")
+    assert ref_output.exists(), (
+        f"Reference xbooz_xform exited cleanly but wrote no {output_name}:\n{combined}"
+    )
     ref_copy = tmp_path / f"reference_{output_name}"
     ref_output.rename(ref_copy)
 
@@ -146,9 +186,95 @@ def test_cli_help() -> None:
     assert "<infile> (T or F)" in proc.stdout
 
 
-pytestmark = pytest.mark.skipif(
-    not REFERENCE_BIN.exists(),
-    reason=f"Reference xbooz_xform binary not found at {REFERENCE_BIN}",
+def _reference_unavailable_reason() -> str | None:
+    """Explain precisely why the reference cannot be used, or return None."""
+    if REFERENCE_BIN is None:
+        return (
+            f"No reference xbooz_xform found: set {REFERENCE_BIN_ENV} to a STELLOPT "
+            "build, or put xbooz_xform on PATH."
+        )
+    if not REFERENCE_BIN.exists():
+        return f"Reference xbooz_xform does not exist: {REFERENCE_BIN}"
+    if _reference_is_this_package():
+        return (
+            f"The xbooz_xform at {REFERENCE_BIN} is booz_xform_jax's own console "
+            "script: this package installs xbooz_xform as an alias of its CLI, so "
+            "anything found on PATH after a plain install is this package itself, "
+            "and comparing against it would compare the package with itself. Set "
+            f"{REFERENCE_BIN_ENV} to a STELLOPT build."
+        )
+    dialect, output = _reference_jlist_offset()
+    if dialect is None:
+        detail = " ".join(output.split())[:200]
+        return (
+            f"Reference xbooz_xform at {REFERENCE_BIN} produced no boozmn output for "
+            f"the probe case, so its behaviour cannot be established: {detail!r}"
+        )
+    if dialect != 0:
+        return (
+            f"Reference xbooz_xform at {REFERENCE_BIN} reads booz_in surface "
+            f"numbers as jlist minus {dialect}, which is the C++ booz_xform "
+            f"convention, not STELLOPT's. Set {REFERENCE_BIN_ENV} to a STELLOPT build "
+            "to run the CLI parity suite."
+        )
+    return None
+
+
+def _reference_is_this_package() -> bool:
+    """True when the discovered binary is this package's own CLI.
+
+    ``pyproject.toml`` installs ``xbooz_xform`` as an alias of
+    ``booz_xform_jax.cli:main``, so after a plain ``pip install`` the name this
+    suite looks for on PATH resolves to the code under test. Comparing against
+    it would pass unconditionally and prove nothing.
+    """
+    proc = subprocess.run(
+        [str(REFERENCE_BIN), "-h"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return "booz_xform_jax" in ((proc.stdout or "") + (proc.stderr or ""))
+
+
+def _reference_jlist_offset() -> tuple[int | None, str]:
+    """Probe the reference for how it numbers surfaces in a ``booz_in`` file.
+
+    Returns ``jlist - <input number>`` together with whatever the binary
+    printed: 0 for the STELLOPT convention that ``booz_xform_jax`` implements,
+    2 for the C++ ``booz_xform`` convention, and ``None`` when the binary
+    produced nothing to measure.
+    """
+    import tempfile
+
+    probe_values = [4, 8]
+    with tempfile.TemporaryDirectory() as raw:
+        probe_dir = Path(raw)
+        shutil.copy(TEST_DIR / "wout_circular_tokamak.nc", probe_dir / "wout_circular_tokamak.nc")
+        (probe_dir / "booz_in.circular_tokamak").write_text(
+            "8 0\ncircular_tokamak\n" + " ".join(str(v) for v in probe_values) + "\n",
+            encoding="utf-8",
+        )
+        proc = _run_reference_cli(probe_dir, "booz_in.circular_tokamak", screen_flag="F")
+        output = (proc.stdout or "") + (proc.stderr or "")
+        out = probe_dir / "boozmn_circular_tokamak.nc"
+        if not out.exists():
+            return None, output
+        with Dataset(out) as ds:
+            jlist = np.asarray(ds.variables["jlist"][:], dtype=int)
+        if jlist.size != len(probe_values):
+            return None, output
+        return int(jlist[0]) - probe_values[0], output
+
+
+_REFERENCE_SKIP_REASON = _reference_unavailable_reason()
+
+# Applied per test rather than as a module-level ``pytestmark``: the tests that
+# exercise only this package's own CLI do not need a reference binary and must
+# keep running when none is available.
+requires_reference = pytest.mark.skipif(
+    _REFERENCE_SKIP_REASON is not None,
+    reason=_REFERENCE_SKIP_REASON or "",
 )
 
 
@@ -170,6 +296,7 @@ pytestmark = pytest.mark.skipif(
         ),
     ],
 )
+@requires_reference
 def test_cli_matches_reference_for_bundled_cases(
     tmp_path: Path, input_name: str, wout_name: str, output_name: str, expect_missing_jlist: bool
 ) -> None:
@@ -187,6 +314,7 @@ def test_cli_matches_reference_for_bundled_cases(
     )
 
 
+@requires_reference
 def test_cli_missing_jlist_defaults_to_all_surfaces(tmp_path: Path) -> None:
     _materialize_case(
         tmp_path,
@@ -203,25 +331,32 @@ def test_cli_missing_jlist_defaults_to_all_surfaces(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("input_name", "input_contents", "wout_source", "output_name"),
+    ("input_name", "input_contents", "wout_name", "output_name"),
     [
         (
             "in_booz.n3are_lowres",
             "16 16\nn3are_R7.75B5.7_lowres\n2 10 20\n",
-            Path("/Users/rogerio/local/simsopt/tests/test_files/wout_n3are_R7.75B5.7_lowres.nc"),
+            "wout_n3are_R7.75B5.7_lowres.nc",
             "boozmn_n3are_R7.75B5.7_lowres.nc",
         ),
         (
             "in_booz.qa_lowres",
             "16 16\n'LandremanPaul2021_QA_lowres'\n2 10 20\n",
-            Path("/Users/rogerio/local/simsopt/tests/test_files/wout_LandremanPaul2021_QA_lowres.nc"),
+            "wout_LandremanPaul2021_QA_lowres.nc",
             "boozmn_LandremanPaul2021_QA_lowres.nc",
         ),
     ],
 )
+@requires_reference
 def test_cli_matches_reference_for_external_generated_inputs(
-    tmp_path: Path, input_name: str, input_contents: str, wout_source: Path, output_name: str
+    tmp_path: Path, input_name: str, input_contents: str, wout_name: str, output_name: str
 ) -> None:
+    wout_source = _extra_wout(wout_name)
+    if wout_source is None:
+        pytest.skip(
+            f"{wout_name} is not bundled with this repository; set "
+            f"{EXTRA_WOUT_DIR_ENV} to a directory that contains it to run this case."
+        )
     _materialize_case(
         tmp_path,
         input_name=input_name,
