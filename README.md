@@ -96,7 +96,7 @@ L2 differences over all modes and all transformed surfaces:
 | Case | ns | `bmnc_b` | `iota_b` | `B_00` |
 |---|---|---|---|---|
 | circular tokamak | 17 | 2.8e-15 | 0 | 3.3e-16 |
-| up/down asymmetric tokamak | 17 | 3.9e-15 | 0 | 4.0e-16 |
+| up/down asymmetric tokamak | 17 | 3.8e-15 | 0 | 4.0e-16 |
 | li383 1.4m | 49 | 6.1e-15 | 0 | 2.7e-15 |
 | LandremanSenguptaPlunk s5.3 | 51 | 4.8e-15 | 0 | 2.8e-15 |
 

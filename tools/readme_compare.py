@@ -553,7 +553,7 @@ def _default_cases(vmec_jax_root: Path | None) -> list[Case]:
 def _markdown_table(rows: list[dict[str, object]]) -> str:
     """Render the rows exactly as the README publishes them."""
     lines = [
-        "| Case | ns | xbooz_xform | booz_xform_jax | Speedup | Peak RSS ref | Peak RSS jax |",
+        "| Case | ns | xbooz_xform | booz_xform_jax | Ratio | Peak RSS ref | Peak RSS jax |",
         "|---|---|---|---|---|---|---|",
     ]
     mib = 1024.0 * 1024.0
