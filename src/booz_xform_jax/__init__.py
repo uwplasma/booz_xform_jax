@@ -30,7 +30,7 @@ from .cli import run_from_legacy_input
 # Version is defined here for convenience.  It must match the value in
 # pyproject.toml for consistency.  Updating the version in one place
 # should be mirrored in the other.
-__version__ = "0.1.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "Booz_xform",
