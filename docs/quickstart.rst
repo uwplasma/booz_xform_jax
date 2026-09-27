@@ -15,7 +15,7 @@ For development, editable installs remain the recommended path::
   python -m pip install -e .
 
 The package depends on ``jax``, ``jaxlib``, ``numpy``, ``netCDF4``,
-``scipy``, ``matplotlib``, and ``plotly``. A normal ``pip install`` pulls
+``scipy`` and ``matplotlib``. A normal ``pip install`` pulls
 those in automatically, so the CLI and the NetCDF readers are ready after
 installation.
 

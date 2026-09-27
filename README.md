@@ -64,7 +64,7 @@ bx.write_boozmn("boozmn_mycase.nc")
 ```
 
 The runtime dependencies installed from PyPI already include `jax`, `jaxlib`,
-`netCDF4`, `scipy`, `numpy`, `matplotlib`, and `plotly`, so the CLI and the
+`netCDF4`, `scipy`, `numpy` and `matplotlib`, so the CLI and the
 NetCDF readers/writers work after a normal `pip install`.
 
 ## Documentation
