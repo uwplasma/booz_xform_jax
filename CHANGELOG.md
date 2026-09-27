@@ -2,6 +2,13 @@
 
 Releases before 0.4.0 are described in their GitHub release notes.
 
+## 0.4.1 - 2026-09-27
+
+- Require `jax>=0.6.2` and `jaxlib>=0.6.2` (the oldest JAX CI tests, on
+  Python 3.10) instead of bare `jax`, so installing into an environment with an
+  older JAX upgrades it.
+- Drop the `plotly` dependency: nothing in the package imports it.
+
 ## 0.4.0 - 2026-09-20
 
 The functional JAX API in `booz_xform_jax.jax_api` is byte-for-byte identical

@@ -4,19 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "booz_xform_jax"
-version = "0.4.0"
+version = "0.4.1"
 description = "Pure Python JAX implementation of the Boozer coordinate transformation"
 readme = "README.md"
 authors = [{ name = "UWPlasma contributors" }]
 license = "MIT"
+# jax 0.6.2 is the newest JAX for Python 3.10, so the 3.10 CI lane tests it.
+# pip keeps an installed package that satisfies a bare requirement, so the floor
+# is what upgrades an older JAX already in the environment.
 dependencies = [
-  "jax",
-  "jaxlib",
+  "jax>=0.6.2",
+  "jaxlib>=0.6.2",
   "numpy",
   "netCDF4",
   "scipy",
   "matplotlib",
-  "plotly",
 ]
 requires-python = ">=3.10"
 classifiers = [
