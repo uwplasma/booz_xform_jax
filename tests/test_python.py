@@ -32,3 +32,16 @@ class MainTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_host_transform_uses_numpy(monkeypatch):
+    """Host execution must not compile JAX kernels after initialization."""
+    import booz_xform_jax.core as core
+
+    b = Booz_xform(mboz=6, nboz=2, verbose=0)
+    b.read_wout(os.path.join(TEST_DIR, 'wout_li383_1.4m.nc'))
+    b.compute_surfs = [10]
+    monkeypatch.setattr(core, 'jnp', None)
+    b.run()
+    assert isinstance(b._theta_grid, np.ndarray)
+    assert np.isfinite(b.bmnc_b).all()

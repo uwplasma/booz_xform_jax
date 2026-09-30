@@ -121,7 +121,7 @@ except ImportError as e:  # pragma: no cover
 from .vmec import init_from_vmec, read_wout, read_wout_data
 from .io_utils import write_boozmn, read_boozmn
 from .jax_api import booz_xform_jax_impl, prepare_booz_xform_constants
-from .trig import _init_trig, _init_trig_np
+from .trig import _init_trig_np
 
 
 # -----------------------------------------------------------------------------
@@ -547,19 +547,19 @@ class Booz_xform:
             # Symmetric case: exploit θ → 2π - θ symmetry, keep [0, π]
             nu3_b = nu2_b
 
-        d_theta = (2.0 * jnp.pi) / ntheta_full
-        d_zeta = (2.0 * jnp.pi) / (self.nfp * nzeta_full)
+        d_theta = (2.0 * _np.pi) / ntheta_full
+        d_zeta = (2.0 * _np.pi) / (self.nfp * nzeta_full)
 
-        theta_vals = jnp.arange(nu3_b) * d_theta
-        zeta_vals = jnp.arange(nzeta_full) * d_zeta
+        theta_vals = _np.arange(nu3_b) * d_theta
+        zeta_vals = _np.arange(nzeta_full) * d_zeta
 
         # Build flattened tensor-product grid:
         #
         #   θ_j = θ_i    for i fixed, repeated over all ζ
         #   ζ_j = ζ_k    tiled over θ rows
         #
-        self._theta_grid = jnp.repeat(theta_vals, nzeta_full)
-        self._zeta_grid = jnp.tile(zeta_vals, nu3_b)
+        self._theta_grid = _np.repeat(theta_vals, nzeta_full)
+        self._zeta_grid = _np.tile(zeta_vals, nu3_b)
 
         self._ntheta = int(ntheta_full)
         self._nzeta = int(nzeta_full)
@@ -579,16 +579,8 @@ class Booz_xform:
         Parameters
         ----------
         jit : bool, optional
-            Placeholder flag (currently unused). The transform is
-            implemented entirely in terms of JAX array operations
-            (``jax.numpy`` and ``einsum``). To avoid large compile
-            times on CPU, we do **not** wrap the entire :meth:`run` in
-            a single :func:`jax.jit` by default. Small helpers such as
-            :func:`_init_trig` *are* jitted.
-
-            Advanced users who want full JIT compilation can wrap
-            :meth:`run` externally, but should be aware that this may
-            lead to long compilation times for large Boozer resolutions.
+            Retained for compatibility; the host transform uses NumPy.
+            Use :meth:`run_jax` for compiled, differentiable transforms.
 
         Notes
         -----
@@ -678,25 +670,22 @@ class Booz_xform:
         # Non-Nyquist (geometry, λ):
         mmax_non = int(_np.max(_np.abs(xm_non_np)))
         nmax_non = int(_np.max(_np.abs(xn_non_np // self.nfp)))
-        cosm, sinm, cosn, sinn = _init_trig(
+        cosm, sinm, cosn, sinn = _init_trig_np(
             theta_grid, zeta_grid, mmax_non, nmax_non, self.nfp
         )
 
         # Nyquist (w, |B|):
         mmax_nyq = int(_np.max(_np.abs(xm_nyq_np)))
         nmax_nyq = int(_np.max(_np.abs(xn_nyq_np // self.nfp)))
-        cosm_nyq, sinm_nyq, cosn_nyq, sinn_nyq = _init_trig(
+        cosm_nyq, sinm_nyq, cosn_nyq, sinn_nyq = _init_trig_np(
             theta_grid, zeta_grid, mmax_nyq, nmax_nyq, self.nfp
         )
 
-        # Convert mode index lists to JAX arrays once (reused per surface).
-        xm_non = jnp.asarray(xm_non_np, dtype=jnp.int32)
-        xn_non = jnp.asarray(xn_non_np, dtype=jnp.int32)
-        xm_nyq = jnp.asarray(xm_nyq_np, dtype=jnp.int32)
-        xn_nyq = jnp.asarray(xn_nyq_np, dtype=jnp.int32)
+        xm_non, xn_non = xm_non_np, xn_non_np
+        xm_nyq, xn_nyq = xm_nyq_np, xn_nyq_np
 
-        xm_b_j = jnp.asarray(self.xm_b, dtype=jnp.int32)
-        xn_b_j = jnp.asarray(self.xn_b, dtype=jnp.int32)
+        xm_b_j = _np.asarray(self.xm_b, dtype=_np.int32)
+        xn_b_j = _np.asarray(self.xn_b, dtype=_np.int32)
 
         # Index of (m=0, n=0) Nyquist mode → Boozer I, G.
         idx00_candidates = _np.where((xm_nyq_np == 0) & (xn_nyq_np == 0))[0]
@@ -713,20 +702,20 @@ class Booz_xform:
         cosm_m_non = cosm[:, xm_non_np]
         sinm_m_non = sinm[:, xm_non_np]
 
-        abs_n_non = jnp.abs(xn_non // self.nfp)
+        abs_n_non = _np.abs(xn_non // self.nfp)
         abs_n_non_idx = _np.asarray(abs_n_non, dtype=int)
         cosn_n_non = cosn[:, abs_n_non_idx]
         sinn_n_non = sinn[:, abs_n_non_idx]
 
-        sign_non = jnp.where(xn_non < 0, -1.0, 1.0)[None, :]
+        sign_non = _np.where(xn_non < 0, -1.0, 1.0)[None, :]
 
         # tcos_non / tsin_non: trigonometric factors multiplying
         # Fourier coefficients for rmnc, zmns, lmns, etc.
         tcos_non = cosm_m_non * cosn_n_non + sinm_m_non * sinn_n_non * sign_non
         tsin_non = sinm_m_non * cosn_n_non - cosm_m_non * sinn_n_non * sign_non
 
-        m_non_f = xm_non.astype(jnp.float64)
-        n_non_f = xn_non.astype(jnp.float64)
+        m_non_f = xm_non.astype(_np.float64)
+        n_non_f = xn_non.astype(_np.float64)
 
         # -------------------------
         # Hoisted Nyquist trig combinations
@@ -734,23 +723,21 @@ class Booz_xform:
         cosm_m_nyq = cosm_nyq[:, xm_nyq_np]
         sinm_m_nyq = sinm_nyq[:, xm_nyq_np]
 
-        abs_n_nyq = jnp.abs(xn_nyq // self.nfp)
+        abs_n_nyq = _np.abs(xn_nyq // self.nfp)
         abs_n_nyq_idx = _np.asarray(abs_n_nyq, dtype=int)
         cosn_n_nyq = cosn_nyq[:, abs_n_nyq_idx]
         sinn_n_nyq = sinn_nyq[:, abs_n_nyq_idx]
 
-        sign_nyq = jnp.where(xn_nyq < 0, -1.0, 1.0)[None, :]
+        sign_nyq = _np.where(xn_nyq < 0, -1.0, 1.0)[None, :]
 
         tcos_nyq = cosm_m_nyq * cosn_n_nyq + sinm_m_nyq * sinn_n_nyq * sign_nyq
         tsin_nyq = sinm_m_nyq * cosn_n_nyq - cosm_m_nyq * sinn_n_nyq * sign_nyq
 
-        m_nyq_f = xm_nyq.astype(jnp.float64)
-        n_nyq_f = xn_nyq.astype(jnp.float64)
+        m_nyq_f = xm_nyq.astype(_np.float64)
+        n_nyq_f = xn_nyq.astype(_np.float64)
 
         # ------------------------------------------------------------------
-        # Convert all hoisted JAX arrays to NumPy once.
-        # This eliminates every JAX dispatch and device→host sync from the
-        # per-surface loop — replacing jnp.einsum with numpy matmul (@).
+        # Host arrays shared by the surface loop.
         # ------------------------------------------------------------------
         tcos_non_np    = _np.asarray(tcos_non)       # (N, mnmax_non)
         tsin_non_np    = _np.asarray(tsin_non)
@@ -888,16 +875,16 @@ class Booz_xform:
         # Computing them inside the loop triggers repeated device→host syncs.
         # ------------------------------------------------------------------
         _m_b_np_idx   = _np.asarray(xm_b_j, dtype=int)         # (mnboz,)
-        _abs_n_b_np   = _np.asarray(jnp.abs(xn_b_j // self.nfp), dtype=int)  # (mnboz,)
-        _sign_b_hoisted = jnp.where(xn_b_j < 0, -1.0, 1.0)[None, :]  # (1, mnboz)
+        _abs_n_b_np   = _np.asarray(_np.abs(xn_b_j // self.nfp), dtype=int)  # (mnboz,)
+        _sign_b_hoisted = _np.where(xn_b_j < 0, -1.0, 1.0)[None, :]  # (1, mnboz)
 
         # Fourier normalisation factor (constant: depends only on grid sizes)
         _fourier_factor0 = (
             2.0 / (self._ntheta * self._nzeta) if self.asym
             else 2.0 / ((self._nu2_b - 1) * self._nzeta)
         )
-        _fourier_factor = jnp.ones((mnboz,), dtype=jnp.float64) * _fourier_factor0
-        _fourier_factor = _fourier_factor.at[0].set(_fourier_factor0 * 0.5)
+        _fourier_factor = _np.ones((mnboz,), dtype=_np.float64) * _fourier_factor0
+        _fourier_factor[0] *= 0.5
 
         # ------------------------------------------------------------------
         # Chunk size for memory-bounded Fourier integrals.
