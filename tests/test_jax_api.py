@@ -19,7 +19,8 @@ def _surface_first(b: Booz_xform, name: str) -> jnp.ndarray:
     return jnp.asarray(np.asarray(getattr(b, name)).T)
 
 
-def test_jax_api_matches_reference_small():
+@pytest.mark.parametrize("surface", [0, -1])
+def test_jax_api_matches_reference_small(surface):
     """Smoke test: JAX API matches Booz_xform.run() on a small surface set."""
     b = Booz_xform()
     b.read_wout(os.path.join(TEST_DIR, "wout_li383_1.4m.nc"))
@@ -27,7 +28,8 @@ def test_jax_api_matches_reference_small():
     # Reduce resolution for faster test.
     b.mboz = 4
     b.nboz = 4
-    b.compute_surfs = [0]
+    surface %= b.ns_in
+    b.compute_surfs = [surface]
     b.run()
 
     # Prepare inputs with surface dimension first.
@@ -55,11 +57,12 @@ def test_jax_api_matches_reference_small():
         mboz=b.mboz,
         nboz=b.nboz,
         asym=bool(b.asym),
-        surface_indices=[0],
+        surface_indices=[surface],
     )
 
-    assert np.allclose(np.asarray(out["jlist"]), np.array([2]))
-    assert int(np.asarray(out["ns_b"])) == rmnc.shape[0]
+    np.testing.assert_array_equal(out["jlist"], [surface + 2])
+    assert int(np.asarray(out["ns_b"])) == rmnc.shape[0] + 1
+    np.testing.assert_allclose((out["jlist"]-1.5)/(out["ns_b"]-1), b.s_b)
 
     # Compare a few spectral coefficients.
     np.testing.assert_allclose(
