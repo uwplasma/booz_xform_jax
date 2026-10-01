@@ -748,7 +748,7 @@ def read_wout(self, filename: str, flux: bool = False) -> None:
 
 
 def read_wout_data(self, wout, flux: bool = False) -> None:
-    """Populate the instance from a VMEC wout-like object (e.g. vmec_jax.WoutData).
+    """Populate the instance from a VMEC wout-like object (e.g. vmex.WoutData).
 
     This mirrors :func:`read_wout` but accepts an in-memory object with the
     standard VMEC fields as attributes instead of reading a NetCDF file.
@@ -758,7 +758,7 @@ def read_wout_data(self, wout, flux: bool = False) -> None:
     self : Booz_xform
         The instance to populate.
     wout : object
-        A wout-like object with VMEC attributes (e.g. ``vmec_jax.WoutData``).
+        A wout-like object with VMEC attributes (e.g. ``vmex.WoutData``).
     flux : bool, optional
         If ``True``, attempt to populate flux profile arrays. When the
         required fields are unavailable, the profiles are silently skipped
@@ -781,6 +781,12 @@ def read_wout_data(self, wout, flux: bool = False) -> None:
     self.mpol_nyq = int(self.xm_nyq[-1]) if self.xm_nyq.size else 0
     self.ntor_nyq = int(self.xn_nyq[-1] // self.nfp) if self.xn_nyq.size else 0
     self.ns_vmec = int(getattr(wout, "ns", getattr(wout, "ns_vmec", 0)))
+    # VMEX's typed WOUT contract uses file order, including square tables.
+    layout = "radius_mode" if any(
+        cls.__module__ == "vmex.core.wout" and cls.__name__ == "WoutData"
+        for cls in type(wout).__mro__
+    ) else None
+    self._vmec_nonnyq_layout = self._vmec_nyq_layout = layout
 
     if self.verbose > 0:
         print(f"[booz_xform_jax]   mpol={self.mpol}, ntor={self.ntor}, mnmax={self.mnmax}")
@@ -800,7 +806,7 @@ def read_wout_data(self, wout, flux: bool = False) -> None:
     bsubvmnc0 = _np.asarray(getattr(wout, "bsubvmnc"))
     bsubvmns0 = _np.asarray(getattr(wout, "bsubvmns")) if self.asym else _np.zeros_like(bmnc0)
 
-    ns = rmnc0.shape[0]
+    ns = self.ns_vmec or rmnc0.shape[0]
     iotas = _np.asarray(getattr(wout, "iotas"))
 
     aspect0 = float(getattr(wout, "aspect", 0.0))

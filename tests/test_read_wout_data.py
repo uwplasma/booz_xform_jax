@@ -53,10 +53,15 @@ def _wout_like_from_netcdf(path: Path):
     return wout
 
 
-def test_read_wout_data_matches_read_wout():
+@pytest.mark.parametrize("transpose", [False, True])
+def test_read_wout_data_matches_read_wout(transpose):
     root = Path(__file__).resolve().parent
     wout_path = root / "test_files" / "wout_li383_1.4m.nc"
     wout_like = _wout_like_from_netcdf(wout_path)
+    if transpose:
+        for name, values in vars(wout_like).items():
+            if isinstance(values, np.ndarray) and values.ndim == 2:
+                setattr(wout_like, name, values.T)
 
     b_ref = Booz_xform()
     b_ref.read_wout(str(wout_path))

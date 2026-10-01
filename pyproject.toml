@@ -34,7 +34,7 @@ classifiers = [
 keywords = ["boozer coordinates", "jax", "plasma physics", "stellarator", "vmec"]
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest", "vmex>=0.11.6; python_version >= '3.11'"]
 docs = ["sphinx", "sphinx-rtd-theme"]
 dev = ["build", "pytest", "sphinx", "sphinx-rtd-theme"]
 
