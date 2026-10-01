@@ -1,17 +1,15 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
 from booz_xform_jax import Booz_xform
 
 
-def _write_square_wout(path):
+def _write_square_wout(path, ns=5, mnmax=5, mnmax_nyq=7):
     netCDF4 = pytest.importorskip("netCDF4")
-
-    ns = 5
-    mnmax = ns
-    mnmax_nyq = 7
 
     with netCDF4.Dataset(str(path), "w") as ds:  # type: ignore[attr-defined]
         ds.createDimension("radius", ns)
@@ -70,3 +68,18 @@ def test_read_wout_uses_dimension_names_when_ns_equals_mnmax(tmp_path):
     expected_m0 = 0.5 * (rmnc_input[:-1, 0] + rmnc_input[1:, 0])
     np.testing.assert_allclose(np.asarray(b.rmnc[0, :]), expected_m0)
 
+
+@pytest.mark.parametrize("shape", [(5, 5, 7), (9, 5, 9)])
+def test_typed_vmex_wout_preserves_square_coefficients(tmp_path, shape):
+    vmex = pytest.importorskip("vmex")
+    path = tmp_path / "wout_square.nc"
+    _write_square_wout(path, *shape)
+    wout = vmex.read_wout(path)
+    expected, actual = Booz_xform(verbose=0), Booz_xform(verbose=0)
+    expected.read_wout(str(path))
+    actual.read_wout_data(wout)
+    for name in ("rmnc", "zmns", "lmns", "bmnc", "bsubumnc", "bsubvmnc", "iota"):
+        np.testing.assert_array_equal(getattr(actual, name), getattr(expected, name))
+    # Reusing a file reader must not attach its old layout to a generic object.
+    with pytest.raises(ValueError, match="ambiguous"):
+        expected.read_wout_data(SimpleNamespace(**vars(wout)))
