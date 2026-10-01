@@ -1,8 +1,8 @@
 {
-  "platform": "Darwin 23.4.0 arm64",
-  "repeats": 7,
+  "platform": "Darwin 24.1.0 arm64",
+  "repeats": 3,
   "reference_bin": "xbooz_xform",
-  "jax_import_overhead_s": 1.144876416947227,
+  "jax_import_overhead_s": 0.7149673749954673,
   "note": "Wall-clock times are whole-process measurements of each command-line program, best of the recorded repeats. booz_xform_jax pays the import overhead above on every invocation; it is not subtracted.",
   "cases": [
     {
@@ -10,52 +10,62 @@
       "ns": 17,
       "mboz": 24,
       "nboz": 0,
-      "reference_wall_s": 0.021037250000517815,
-      "jax_wall_s": 2.639212082955055,
-      "reference_peak_rss_bytes": 11829248,
-      "jax_peak_rss_bytes": 295714816,
+      "reference_wall_s": 0.0955069170013303,
+      "jax_wall_s": 0.8199702499987325,
+      "reference_peak_rss_bytes": 12419072,
+      "jax_peak_rss_bytes": 236716032,
       "iota_rel_l2": 0.0,
-      "b00_rel_l2": 3.3098891000324703e-16,
-      "bmnc_rel_l2": 2.8007140054101546e-15
+      "b00_rel_l2": 3.434834247072336e-16,
+      "bmnc_rel_l2": 4.8097985278015595e-15,
+      "bmn_rel_l2": 4.8097985278015595e-15
     },
     {
       "case_id": "LandremanSenguptaPlunk_section5p3",
       "ns": 51,
       "mboz": 24,
       "nboz": 24,
-      "reference_wall_s": 1.8983767090248875,
-      "jax_wall_s": 3.197096915973816,
-      "reference_peak_rss_bytes": 76414976,
-      "jax_peak_rss_bytes": 631537664,
+      "reference_wall_s": 1.7230242090008687,
+      "jax_wall_s": 0.9515245410002535,
+      "reference_peak_rss_bytes": 74006528,
+      "jax_peak_rss_bytes": 538689536,
       "iota_rel_l2": 0.0,
-      "b00_rel_l2": 2.7866820286134446e-15,
-      "bmnc_rel_l2": 4.753003812517703e-15
+      "b00_rel_l2": 1.5553742353607453e-16,
+      "bmnc_rel_l2": 3.988107082027485e-15,
+      "bmn_rel_l2": 5.666123166762115e-15
     },
     {
       "case_id": "up_down_asymmetric_tokamak",
       "ns": 17,
       "mboz": 24,
       "nboz": 0,
-      "reference_wall_s": 0.021333875018171966,
-      "jax_wall_s": 2.761847499990836,
-      "reference_peak_rss_bytes": 11927552,
-      "jax_peak_rss_bytes": 296550400,
+      "reference_wall_s": 0.09680008399300277,
+      "jax_wall_s": 0.8229217920015799,
+      "reference_peak_rss_bytes": 12582912,
+      "jax_peak_rss_bytes": 235061248,
       "iota_rel_l2": 0.0,
-      "b00_rel_l2": 3.963625014519924e-16,
-      "bmnc_rel_l2": 3.84540808578173e-15
+      "b00_rel_l2": 4.299154945106427e-16,
+      "bmnc_rel_l2": 7.986338541159358e-15,
+      "bmn_rel_l2": 1.0276739233341271e-14
     },
     {
       "case_id": "li383_1.4m",
       "ns": 49,
       "mboz": 24,
       "nboz": 24,
-      "reference_wall_s": 0.7843490410014056,
-      "jax_wall_s": 2.6937255000229925,
-      "reference_peak_rss_bytes": 63733760,
-      "jax_peak_rss_bytes": 512049152,
+      "reference_wall_s": 1.1577171250100946,
+      "jax_wall_s": 0.9119791250122944,
+      "reference_peak_rss_bytes": 65208320,
+      "jax_peak_rss_bytes": 419168256,
       "iota_rel_l2": 0.0,
-      "b00_rel_l2": 2.724985541877549e-15,
-      "bmnc_rel_l2": 6.0617987841238235e-15
+      "b00_rel_l2": 1.9756129744141947e-16,
+      "bmnc_rel_l2": 4.879457674456269e-15,
+      "bmn_rel_l2": 4.87945767445627e-15
     }
-  ]
+  ],
+  "source_commit": "e799e8e",
+  "hardware": "Apple M2",
+  "jax_version": "0.10.2",
+  "precision": "float64",
+  "threads": 4,
+  "compilation_cache": false
 }

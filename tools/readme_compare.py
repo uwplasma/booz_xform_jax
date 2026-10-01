@@ -1,21 +1,4 @@
-"""Generate README comparison figures for booz_xform_jax vs original xbooz_xform.
-
-The numbers published in the README come from this script. Every row is an
-end-to-end measurement of the two command-line programs on the same legacy
-``booz_in`` input: total wall-clock time and peak resident set size of the
-process, taken as the best of several repeats.
-
-Total wall-clock time is the number a user actually waits for, and for
-``booz_xform_jax`` it includes a fixed Python and JAX import cost that the
-compiled reference does not pay. That cost is measured separately and
-reported alongside the table so the two contributions can be told apart; it
-is not subtracted from any published figure.
-
-The reference binary is located from ``--reference-bin``, the
-``BOOZ_XFORM_REFERENCE_BIN`` environment variable, or ``xbooz_xform`` on
-``PATH``. Two further cases are included when ``--vmec-jax-root`` or the
-``VMEC_JAX_ROOT`` environment variable points at a tree that contains them.
-"""
+"""Compare matched CLI spectra, runtime and memory with BOOZ_XFORM."""
 
 from __future__ import annotations
 
@@ -401,7 +384,11 @@ def _profile_metrics(ref_data, jax_data) -> dict[str, float]:
     iota_jax = np.asarray(jax_data["iota_b"])[1:]
     b00_ref = bmnc_ref[0]
     b00_jax = bmnc_jax[0]
+    bmns_ref = np.asarray(ref_data.get("bmns_b", np.zeros_like(bmnc_ref)))
+    bmns_jax = np.asarray(jax_data.get("bmns_b", np.zeros_like(bmnc_jax)))
     return {
+        "bmn_rel_l2": float(np.linalg.norm(np.stack((bmnc_jax - bmnc_ref, bmns_jax - bmns_ref)))
+                            / np.linalg.norm(np.stack((bmnc_ref, bmns_ref)))),
         "iota_rel_l2": float(np.linalg.norm(iota_jax - iota_ref) / max(np.linalg.norm(iota_ref), 1e-30)),
         "b00_rel_l2": float(np.linalg.norm(b00_jax - b00_ref) / max(np.linalg.norm(b00_ref), 1e-30)),
         "bmnc_rel_l2": float(np.linalg.norm(bmnc_jax - bmnc_ref) / max(np.linalg.norm(bmnc_ref), 1e-30)),
@@ -693,16 +680,14 @@ def main() -> None:
         rows,
         outpath=outdir / "comparison_runtime.png",
         subtitle=(
-            f"best of {args.repeats} runs on {platform}; booz_xform_jax includes "
-            f"{overhead.wall_s:.1f} s of fixed Python and JAX import cost on every invocation"
+            f"{platform} CPU, float64; fastest of {args.repeats} fresh processes"
         ),
     )
     _plot_memory(
         rows,
         outpath=outdir / "comparison_memory.png",
         subtitle=(
-            f"best of {args.repeats} runs on {platform}; peak resident set size of the "
-            "whole process, including the JAX runtime"
+            f"{platform} CPU; peak memory of each complete process"
         ),
     )
     for case_id, ref_data, jax_data in selected_profiles:
