@@ -793,7 +793,7 @@ def booz_xform_jax_impl(
 
     result = {
         "nfp_b": jnp.asarray(constants.nfp),
-        "ns_b": jnp.asarray(ns_b_full),
+        "ns_b": jnp.asarray(ns_b_full + 1),
         "ixm_b": jnp.asarray(grids.xm_b),
         "ixn_b": jnp.asarray(grids.xn_b),
         "iota_b": iota,
