@@ -163,6 +163,6 @@ The repository ships several example scripts:
   example.
 - ``examples/example_li383_jacobian_sensitivity.py``: matrix-free gradients,
   JVPs, and VJPs for ``gmnc_b`` Jacobian harmonics.
-- ``examples/example_vmec_jax_pipeline.py``: in-memory VMEC-to-Boozer pipeline.
+- ``examples/example_vmex_pipeline.py``: in-memory VMEC-to-Boozer pipeline.
 - ``examples/example_li383_wireframe.py``: wireframe-style visualization.
 - ``examples/example_li383_resolution_scan.py``: transform-resolution studies.

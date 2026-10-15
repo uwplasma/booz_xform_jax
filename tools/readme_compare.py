@@ -23,7 +23,6 @@ import numpy as np  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 
 REFERENCE_BIN_ENV = "BOOZ_XFORM_REFERENCE_BIN"
-VMEC_JAX_ROOT_ENV = "VMEC_JAX_ROOT"
 
 
 def _default_reference_bin() -> Path | None:
@@ -35,9 +34,6 @@ def _default_reference_bin() -> Path | None:
     return Path(on_path) if on_path else None
 
 
-def _default_vmec_jax_root() -> Path | None:
-    from_env = os.environ.get(VMEC_JAX_ROOT_ENV)
-    return Path(from_env) if from_env else None
 
 _C_REF = "#1f77b4"
 _C_JAX = "#ff7f0e"
@@ -46,8 +42,6 @@ _DISPLAY = {
     "LandremanSenguptaPlunk_section5p3": "LandremanSenguptaPlunk s5.3",
     "up_down_asymmetric_tokamak": "up/down asymmetric tokamak",
     "li383_1.4m": "li383 1.4m",
-    "ITERModel": "ITERModel",
-    "LandremanPaul2021_QA_lowres": "LandremanPaul2021 QA lowres",
 }
 
 
@@ -395,59 +389,6 @@ def _profile_metrics(ref_data, jax_data) -> dict[str, float]:
     }
 
 
-def _plot_profiles(*, ref_data, jax_data, title: str, outpath: Path) -> None:
-    rho_ref = _normalized_radius(ref_data)
-    rho_jax = _normalized_radius(jax_data)
-    rho_sel_ref = _selected_surface_radius(ref_data)
-    rho_sel_jax = _selected_surface_radius(jax_data)
-    fig, axes = plt.subplots(1, 2, figsize=(10.5, 3.8), constrained_layout=True)
-    axes[0].plot(rho_ref, np.asarray(ref_data["iota_b"])[1:], color=_C_REF, lw=2.2, label="xbooz_xform")
-    axes[0].plot(rho_jax, np.asarray(jax_data["iota_b"])[1:], color=_C_JAX, lw=2.0, ls="--", label="booz_xform_jax")
-    axes[0].set_xlabel(r"$\sqrt{s}$")
-    axes[0].set_ylabel(r"$\iota_B$")
-    axes[0].set_title(f"{_DISPLAY.get(title, title)}: iota_b")
-    axes[0].grid(alpha=0.25)
-    axes[0].legend(frameon=False)
-
-    axes[1].plot(rho_sel_ref, np.asarray(ref_data["bmnc_b"])[0], color=_C_REF, lw=2.2, label="xbooz_xform")
-    axes[1].plot(rho_sel_jax, np.asarray(jax_data["bmnc_b"])[0], color=_C_JAX, lw=2.0, ls="--", label="booz_xform_jax")
-    axes[1].set_xlabel(r"$\sqrt{s}$")
-    axes[1].set_ylabel(r"$B_{00}$")
-    axes[1].set_title(f"{_DISPLAY.get(title, title)}: Boozer B00")
-    axes[1].grid(alpha=0.25)
-    axes[1].legend(frameon=False)
-    fig.savefig(outpath, dpi=220)
-    plt.close(fig)
-
-
-def _plot_surface_compare(*, ref_data, jax_data, title: str, outpath: Path) -> None:
-    js = int(ref_data["ns_b"]) - 1
-    theta_ref, phi_ref, modb_ref = _surface_modb(ref_data, js=js)
-    _, _, modb_jax = _surface_modb(jax_data, js=min(js, int(jax_data["ns_b"]) - 1))
-    fig, axes = plt.subplots(1, 3, figsize=(13.2, 3.8), constrained_layout=True)
-    vmin = min(float(np.min(modb_ref)), float(np.min(modb_jax)))
-    vmax = max(float(np.max(modb_ref)), float(np.max(modb_jax)))
-    display = _DISPLAY.get(title, title)
-    for ax, data, name in zip(
-        axes[:2],
-        [modb_ref, modb_jax],
-        ["xbooz_xform", "booz_xform_jax"],
-        strict=False,
-    ):
-        im = ax.contourf(phi_ref, theta_ref, data, levels=24, vmin=vmin, vmax=vmax, cmap="viridis")
-        ax.set_title(f"{display}: {name}")
-        ax.set_xlabel(r"$\varphi_B$")
-        ax.set_ylabel(r"$\theta_B$")
-    diff = modb_jax - modb_ref
-    im = axes[2].contourf(phi_ref, theta_ref, diff, levels=24, cmap="coolwarm")
-    axes[2].set_title(f"{display}: JAX - ref")
-    axes[2].set_xlabel(r"$\varphi_B$")
-    axes[2].set_ylabel(r"$\theta_B$")
-    fig.colorbar(im, ax=axes, shrink=0.92)
-    fig.savefig(outpath, dpi=220)
-    plt.close(fig)
-
-
 def _paired_bars(
     rows: list[dict[str, object]],
     *,
@@ -518,23 +459,13 @@ def _plot_memory(rows: list[dict[str, object]], *, outpath: Path, subtitle: str)
     )
 
 
-def _default_cases(vmec_jax_root: Path | None) -> list[Case]:
-    cases = [
+def _default_cases() -> list[Case]:
+    return [
         Case("circular_tokamak", ROOT / "tests" / "test_files" / "wout_circular_tokamak.nc", mboz=24, nboz=24),
         Case("LandremanSenguptaPlunk_section5p3", ROOT / "tests" / "test_files" / "wout_LandremanSenguptaPlunk_section5p3.nc", mboz=24, nboz=24),
         Case("up_down_asymmetric_tokamak", ROOT / "tests" / "test_files" / "wout_up_down_asymmetric_tokamak.nc", mboz=24, nboz=24),
         Case("li383_1.4m", ROOT / "tests" / "test_files" / "wout_li383_1.4m.nc", mboz=24, nboz=24),
     ]
-    if vmec_jax_root is None:
-        return cases
-    base = vmec_jax_root / "outputs" / "readme_fsq_trace_single_grid_work"
-    iter_wout = base / "ITERModel" / "wout_ITERModel_VMEC2000.nc"
-    qa_wout = base / "LandremanPaul2021_QA_lowres" / "wout_LandremanPaul2021_QA_lowres_VMEC2000.nc"
-    if iter_wout.exists():
-        cases.append(Case("ITERModel", iter_wout, mboz=16, nboz=16))
-    if qa_wout.exists():
-        cases.append(Case("LandremanPaul2021_QA_lowres", qa_wout, mboz=16, nboz=16))
-    return cases
 
 
 def _markdown_table(rows: list[dict[str, object]]) -> str:
@@ -570,15 +501,6 @@ def main() -> None:
         help=(
             "Reference xbooz_xform binary. Defaults to the "
             f"{REFERENCE_BIN_ENV} environment variable, then to xbooz_xform on PATH."
-        ),
-    )
-    p.add_argument(
-        "--vmec-jax-root",
-        type=Path,
-        default=_default_vmec_jax_root(),
-        help=(
-            "Optional tree holding the two extra VMEC cases. Defaults to the "
-            f"{VMEC_JAX_ROOT_ENV} environment variable; the cases are skipped when unset."
         ),
     )
     p.add_argument(
@@ -622,7 +544,6 @@ def main() -> None:
     workdir = args.workdir.expanduser().resolve()
     outdir = args.outdir.expanduser().resolve()
     asset_dir = args.asset_dir.expanduser().resolve()
-    vmec_jax_root = args.vmec_jax_root.expanduser().resolve() if args.vmec_jax_root else None
     for directory in (workdir, outdir, asset_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
@@ -636,9 +557,8 @@ def main() -> None:
     print(f"booz_xform_jax import overhead: {overhead.wall_s:.2f} s")
 
     rows: list[dict[str, object]] = []
-    selected_profiles: list[tuple[str, dict[str, object], dict[str, object]]] = []
 
-    for case in _default_cases(vmec_jax_root):
+    for case in _default_cases():
         case_dir, input_jax, input_ref = _materialize_case(
             case, workdir=workdir, dialect=dialect
         )
@@ -672,8 +592,6 @@ def main() -> None:
             f"booz_xform_jax {jax_measurement.wall_s:.2f} s, "
             f"bmnc relative L2 {metrics['bmnc_rel_l2']:.2e}"
         )
-        if case.case_id in {"ITERModel", "LandremanPaul2021_QA_lowres"}:
-            selected_profiles.append((case.case_id, ref_data, jax_data))
 
     platform = f"{os.uname().sysname} {os.uname().machine}"
     _plot_runtimes(
@@ -690,10 +608,6 @@ def main() -> None:
             f"{platform} CPU; peak memory of each complete process"
         ),
     )
-    for case_id, ref_data, jax_data in selected_profiles:
-        short = "iter" if case_id == "ITERModel" else "qa"
-        _plot_profiles(ref_data=ref_data, jax_data=jax_data, title=case_id, outpath=asset_dir / f"{short}_profiles_compare.png")
-        _plot_surface_compare(ref_data=ref_data, jax_data=jax_data, title=case_id, outpath=asset_dir / f"{short}_surface_compare.png")
 
     payload = {
         "platform": f"{os.uname().sysname} {os.uname().release} {os.uname().machine}",
@@ -717,10 +631,6 @@ def main() -> None:
     print()
     print(f"Wrote {outdir / 'comparison_runtime.png'}")
     print(f"Wrote {outdir / 'comparison_memory.png'}")
-    for case_id, *_ in selected_profiles:
-        short = "iter" if case_id == "ITERModel" else "qa"
-        print(f"Wrote {asset_dir / f'{short}_profiles_compare.png'}")
-        print(f"Wrote {asset_dir / f'{short}_surface_compare.png'}")
     print(f"Wrote {asset_dir / 'readme_compare_metrics.json'}")
 
 

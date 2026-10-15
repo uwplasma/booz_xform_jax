@@ -2,7 +2,7 @@
 
 This module provides a JIT-friendly, functional interface that avoids
 Python loops over surfaces and keeps all arrays in JAX. It is intended
-for end-to-end differentiation with vmec_jax -> booz_xform_jax -> neo_jax.
+for end-to-end differentiation with VMEX -> booz_xform_jax -> neo_jax.
 """
 
 from __future__ import annotations

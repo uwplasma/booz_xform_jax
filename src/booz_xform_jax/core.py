@@ -411,7 +411,7 @@ class Booz_xform:
         Parameters
         ----------
         wout :
-            A VMEC wout-like object (e.g. ``vmec_jax.WoutData``).
+            A VMEC wout-like object (e.g. ``vmex.WoutData``).
         flux :
             If ``True``, also read radial profile arrays (φ', χ, p, …) when available.
         """
