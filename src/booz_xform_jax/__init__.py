@@ -26,6 +26,7 @@ from .jax_api import (
     prepare_booz_xform_constants_from_inputs,
 )
 from .cli import run_from_legacy_input
+from .io_utils import load_boozmn as read_boozmn
 
 # Version is defined here for convenience.  It must match the value in
 # pyproject.toml for consistency.  Updating the version in one place
@@ -34,6 +35,7 @@ __version__ = "0.4.3"
 
 __all__ = [
     "Booz_xform",
+    "read_boozmn",
     "surfplot",
     "symplot",
     "modeplot",

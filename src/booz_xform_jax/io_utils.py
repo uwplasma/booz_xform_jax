@@ -181,22 +181,33 @@ def write_boozmn(self, filename: str) -> None:
     return None
 
 
-def read_boozmn(self, filename: str) -> None:
-    """Read Boozer Fourier data from a ``boozmn`` NetCDF file.
+_BOOZMN_SPECTRA = ("bmnc_b", "rmnc_b", "zmns_b", "pmns_b", "gmn_b")
+_BOOZMN_SPECTRA_ASYM = ("bmns_b", "rmns_b", "zmnc_b", "pmnc_b", "gmns_b")
+_BOOZMN_PROFILES = ("iota_b", "buco_b", "bvco_b", "beta_b", "phip_b", "chi_b",
+                    "pres_b", "phi_b")
+_BOOZMN_SCALARS = ("nfp_b", "ns_b", "mboz_b", "nboz_b", "aspect_b", "rmax_b",
+                   "rmin_b", "betaxis_b", "toroidal_flux_b")
 
-    This routine populates a :class:`~booz_xform_jax.core.Booz_xform`
-    instance with data from a file produced by the original
-    ``booz_xform`` program or by :func:`write_boozmn`.  It reads the
-    mode definitions, radial profiles and spectral arrays, reorienting
-    the latter into the internal ``(mnboz, ns_b)`` layout.  Existing
-    data on the instance will be overwritten.
 
-    Parameters
-    ----------
-    self : Booz_xform
-        The instance to populate.
-    filename : str
-        Path to a ``boozmn`` NetCDF file.
+def load_boozmn(filename) -> dict:
+    """Read a ``boozmn`` NetCDF file into a plain dictionary (stateless).
+
+    Keys are the standard ``boozmn`` variable names. Layout, identical to
+    the file and to what NEO_JAX and NTX index:
+
+    * spectra (``bmnc_b``, ``rmnc_b``, ``zmns_b``, ``pmns_b``, ``gmn_b`` and,
+      when ``lasym``, ``bmns_b``, ``rmns_b``, ``zmnc_b``, ``pmnc_b``,
+      ``gmns_b``): ``(len(jlist), mnboz)``, i.e. one row per packed surface;
+    * radial profiles (``iota_b``, ``buco_b``, ``bvco_b``, optional
+      ``phi_b``, ``phip_b``, ``chi_b``, ``pres_b``, ``beta_b``): full VMEC
+      grid of length ``ns_b``, entry 0 being the axis placeholder;
+    * ``jlist``: 1-based VMEC full-grid indices of the packed surfaces
+      (half-grid surface ``jlist - 2`` in zero-based half-grid indexing);
+    * ``ixm_b``, ``ixn_b``: integer mode numbers (``ixn_b`` includes ``nfp``);
+    * scalars as Python ``int``/``float``; ``lasym`` as ``bool``.
+
+    Signs are as stored: ``pmns_b`` is minus the Boozer ``nu`` spectrum.
+    Optional variables absent from the file are omitted.
     """
     try:
         import netCDF4 as nc  # type: ignore
@@ -205,71 +216,60 @@ def read_boozmn(self, filename: str) -> None:
             "The netCDF4 package is required to read boozmn files. "
             "Install it via 'pip install netCDF4'"
         ) from e
+    with nc.Dataset(str(filename), 'r') as ds:
+        v = ds.variables
+        out = {"lasym": bool(v['lasym__logical__'][...].item())}
+        for name in _BOOZMN_SCALARS:
+            if name in v:
+                val = _np.asarray(v[name][...]).item()
+                out[name] = int(val) if name in ("nfp_b", "ns_b", "mboz_b", "nboz_b") else float(val)
+        for name in ("ixm_b", "ixn_b", "jlist"):
+            out[name] = _np.asarray(v[name][:], dtype=int)
+        for name in _BOOZMN_PROFILES:
+            if name in v:
+                out[name] = _np.asarray(v[name][:], dtype=float)
+        spectra = _BOOZMN_SPECTRA + (_BOOZMN_SPECTRA_ASYM if out["lasym"] else ())
+        for name in spectra:
+            out[name] = _np.asarray(v[name][:, :], dtype=float)
+    return out
+
+
+def read_boozmn(self, filename: str) -> None:
+    """Populate a :class:`~booz_xform_jax.core.Booz_xform` from a ``boozmn`` file.
+
+    Thin wrapper over :func:`load_boozmn` that reorients spectra into the
+    internal ``(mnboz, ns_b)`` layout. Existing data on the instance is
+    overwritten.
+    """
     if self.verbose > 0:
         print(f"[booz_xform_jax] Reading boozmn file: {filename}")
-    with nc.Dataset(filename, 'r') as ds:
-        # Symmetry flag
-        self.asym = bool(ds.variables['lasym__logical__'][...].item())
-        # Dimensions
-        ns_in_plus_1 = ds.dimensions['radius'].size
-        self.ns_in = ns_in_plus_1 - 1
-        self.ns_b = ds.dimensions['pack_rad'].size
-        self.mnboz = ds.dimensions['mn_mode'].size
-        # Scalars
-        self.nfp = int(ds.variables['nfp_b'][...].item())
-        self.mboz = int(ds.variables['mboz_b'][...].item())
-        self.nboz = int(ds.variables['nboz_b'][...].item())
-        # Toroidal flux (if present – older files may not have it)
-        if 'toroidal_flux_b' in ds.variables:
-            self.toroidal_flux = float(ds.variables['toroidal_flux_b'][...].item())
-        else:
-            self.toroidal_flux = 0.0
-        # Indices of selected surfaces (convert from 1-based jlist)
-        self.compute_surfs = [int(j) - 2 for j in ds.variables['jlist'][:]]
-        # Mode lists
-        self.xm_b = _np.asarray(ds.variables['ixm_b'][:], dtype=int)
-        self.xn_b = _np.asarray(ds.variables['ixn_b'][:], dtype=int)
-        # Radial profiles on full grid
-        iota_b = _np.asarray(ds.variables['iota_b'][:])
-        self.iota = jnp.asarray(iota_b[1:], dtype=jnp.float64)
-        buco_b = _np.asarray(ds.variables['buco_b'][:])
-        bvco_b = _np.asarray(ds.variables['bvco_b'][:])
-        self.Boozer_I_all = buco_b[1:]
-        self.Boozer_G_all = bvco_b[1:]
-        # Optional profiles
-        for name, attr in [('phip_b','phip'), ('chi_b','chi'), ('pres_b','pres'), ('phi_b','phi')]:
-            if name in ds.variables:
-                arr = _np.asarray(ds.variables[name][:])
-                setattr(self, attr, jnp.asarray(arr[1:], dtype=jnp.float64))
-        # Spectra: stored as (pack_rad, mn_mode)
-        self.bmnc_b = _np.asarray(ds.variables['bmnc_b'][:, :]).T
-        self.rmnc_b = _np.asarray(ds.variables['rmnc_b'][:, :]).T
-        self.zmns_b = _np.asarray(ds.variables['zmns_b'][:, :]).T
-        self.numns_b = -_np.asarray(ds.variables['pmns_b'][:, :]).T
-        self.gmnc_b = _np.asarray(ds.variables['gmn_b'][:, :]).T
-        if self.asym:
-            self.bmns_b = _np.asarray(ds.variables['bmns_b'][:, :]).T
-            self.rmns_b = _np.asarray(ds.variables['rmns_b'][:, :]).T
-            self.zmnc_b = _np.asarray(ds.variables['zmnc_b'][:, :]).T
-            self.numnc_b = -_np.asarray(ds.variables['pmnc_b'][:, :]).T
-            self.gmns_b = _np.asarray(ds.variables['gmns_b'][:, :]).T
-        else:
-            self.bmns_b = None
-            self.rmns_b = None
-            self.zmnc_b = None
-            self.numnc_b = None
-            self.gmns_b = None
-        # Derive Boozer I and G on selected surfaces
-        self.Boozer_I = _np.asarray(self.Boozer_I_all)[self.compute_surfs]
-        self.Boozer_G = _np.asarray(self.Boozer_G_all)[self.compute_surfs]
-        # If s_in is not already defined (i.e., we haven't run init_from_vmec),
-        # reconstruct the same half-grid used in init_from_vmec:
-        if self.s_in is None:
-            full_grid = _np.linspace(0.0, 1.0, ns_in_plus_1)  # 0..1, length ns_in+1
-            half_grid = 0.5 * (full_grid[:-1] + full_grid[1:])  # midpoints
-            self.s_in = half_grid
-        # Set s_b for selected surfaces
-        self.s_b = _np.asarray(self.s_in)[self.compute_surfs]
+    d = load_boozmn(filename)
+    self.asym = d["lasym"]
+    ns_in_plus_1 = d["iota_b"].shape[0]
+    self.ns_in = ns_in_plus_1 - 1
+    self.ns_b, self.mnboz = d["bmnc_b"].shape
+    self.nfp, self.mboz, self.nboz = d["nfp_b"], d["mboz_b"], d["nboz_b"]
+    self.toroidal_flux = d.get("toroidal_flux_b", 0.0)
+    self.compute_surfs = [int(j) - 2 for j in d["jlist"]]
+    self.xm_b, self.xn_b = d["ixm_b"], d["ixn_b"]
+    self.iota = jnp.asarray(d["iota_b"][1:], dtype=jnp.float64)
+    self.Boozer_I_all = d["buco_b"][1:]
+    self.Boozer_G_all = d["bvco_b"][1:]
+    for name, attr in [('phip_b', 'phip'), ('chi_b', 'chi'), ('pres_b', 'pres'), ('phi_b', 'phi')]:
+        if name in d:
+            setattr(self, attr, jnp.asarray(d[name][1:], dtype=jnp.float64))
+    self.bmnc_b, self.rmnc_b, self.zmns_b = d["bmnc_b"].T, d["rmnc_b"].T, d["zmns_b"].T
+    self.numns_b, self.gmnc_b = -d["pmns_b"].T, d["gmn_b"].T
+    if self.asym:
+        self.bmns_b, self.rmns_b, self.zmnc_b = d["bmns_b"].T, d["rmns_b"].T, d["zmnc_b"].T
+        self.numnc_b, self.gmns_b = -d["pmnc_b"].T, d["gmns_b"].T
+    else:
+        self.bmns_b = self.rmns_b = self.zmnc_b = self.numnc_b = self.gmns_b = None
+    self.Boozer_I = _np.asarray(self.Boozer_I_all)[self.compute_surfs]
+    self.Boozer_G = _np.asarray(self.Boozer_G_all)[self.compute_surfs]
+    if self.s_in is None:
+        full_grid = _np.linspace(0.0, 1.0, ns_in_plus_1)
+        self.s_in = 0.5 * (full_grid[:-1] + full_grid[1:])
+    self.s_b = _np.asarray(self.s_in)[self.compute_surfs]
     if self.verbose > 0:
         print("[booz_xform_jax] Finished reading boozmn file")
-    return None
