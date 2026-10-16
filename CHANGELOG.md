@@ -2,6 +2,12 @@
 
 Releases before 0.4.0 are described in their GitHub release notes.
 
+## 0.5.0 - 2026-10-16
+
+- `booz_xform_jax.read_boozmn(path)` returns a boozmn file as a dict in the
+  file's own layout (#21). `Booz_xform.read_boozmn` wraps it, so there is one
+  parser; NEO_JAX, NTX and balloon_jax can drop their copies.
+
 ## 0.4.1 - 2026-09-27
 
 - Require `jax>=0.6.2` and `jaxlib>=0.6.2` (the oldest JAX CI tests, on

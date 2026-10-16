@@ -31,7 +31,7 @@ from .io_utils import load_boozmn as read_boozmn
 # Version is defined here for convenience.  It must match the value in
 # pyproject.toml for consistency.  Updating the version in one place
 # should be mirrored in the other.
-__version__ = "0.4.3"
+__version__ = "0.5.0"
 
 __all__ = [
     "Booz_xform",
