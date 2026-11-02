@@ -128,3 +128,30 @@ quadrature nodes, Fourier modes or normalization. Floating-point summation
 order can differ. CPU, short reductions and large mode matrices keep direct
 contractions. Forward and reverse differentiation follow the same formulas;
 resolution-convergence checks remain necessary for either execution path.
+
+CPU, GPU and multi-device defaults
+----------------------------------
+
+booz_xform_jax enables float64 at import and runs one transform on JAX's default device: one GPU when a CUDA ``jaxlib`` is installed, else the CPU. It does not split work across devices or set a persistent compilation cache.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Setting
+     - Default
+     - Change it when
+   * - ``JAX_PLATFORMS=cpu``
+     - GPU when a CUDA ``jaxlib`` is installed
+     - One-off transforms, where the compile dominates; the README lists first and warm calls
+   * - ``surface_chunk``, ``memory_budget_bytes``
+     - ``"auto"``: all surfaces in one batch
+     - Memory runs out: set a budget or chunk
+   * - ``trig_f32``
+     - float64 tables
+     - Memory is tight and you have checked accuracy
+   * - ``XLA_PYTHON_CLIENT_PREALLOCATE=false``
+     - JAX preallocates most GPU memory
+     - Several processes share one GPU
+   * - ``JAX_COMPILATION_CACHE_DIR``
+     - no persistent cache
+     - You rerun in new processes
