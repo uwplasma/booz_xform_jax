@@ -37,9 +37,8 @@ jobs:
 
   test:
     name: Tests (Python ${{ matrix.python-version }})
-    # Never run fork code on the self-hosted runners.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, macOS, uwplasma-cpu]
+    # Fork PRs run on hosted Ubuntu, never on the self-hosted runners.
+    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && matrix.python-version == '3.12')) && fromJSON('["self-hosted","macOS","uwplasma-cpu"]') || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       JAX_PLATFORM_NAME: cpu
