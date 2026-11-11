@@ -54,3 +54,6 @@ where = ["src"]
 
 [tool.ruff]
 extend-exclude = [".claude"]
+
+[tool.pytest.ini_options]
+markers = ["gpu: fast checks run on the GPU CI runner (also run on CPU)"]

@@ -21,6 +21,8 @@ import unittest
 import numpy as np
 from netCDF4 import Dataset
 
+import tempfile
+
 from booz_xform_jax import Booz_xform
 
 # Provide backwards compatibility alias
@@ -30,6 +32,12 @@ TEST_DIR = os.path.join(os.path.dirname(__file__), 'test_files')
 
 
 class RegressionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # Per-test directory so parallel (xdist) workers never share output files.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self._tmpdir = tmp.name
+
     def test_regression(self) -> None:
         configurations = [
             'circular_tokamak',
@@ -77,7 +85,7 @@ class RegressionTest(unittest.TestCase):
                     np.testing.assert_allclose(arr_ref, sign * arr_new, rtol=rtol, atol=atol)
 
                 # Compare select variables written to boozmn files
-                boozmn_new_filename = os.path.join(TEST_DIR, f'boozmn_new_{config}.nc')
+                boozmn_new_filename = os.path.join(self._tmpdir, f'boozmn_new_{config}.nc')
                 b.write_boozmn(boozmn_new_filename)
                 f2 = Dataset(boozmn_new_filename, 'r')
                 vars_in_file = f.variables.keys()
