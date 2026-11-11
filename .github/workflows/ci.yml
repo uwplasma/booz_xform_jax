@@ -6,14 +6,43 @@ on:
       - main
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
-  JAX_PLATFORM_NAME: cpu
   MPLBACKEND: Agg
 
 jobs:
+  smoke:
+    name: Smoke (hosted)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      JAX_PLATFORM_NAME: cpu
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package and test dependencies
+        run: python -m pip install .[test]
+
+      - name: Run a fast test subset
+        run: pytest -q -m gpu
+
   test:
     name: Tests (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    # Never run fork code on the self-hosted runners.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, uwplasma-cpu]
+    timeout-minutes: 30
+    env:
+      JAX_PLATFORM_NAME: cpu
     strategy:
       fail-fast: false
       matrix:
@@ -24,31 +53,55 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
+          enable-cache: false
 
       - name: Install package and test dependencies
-        run: python -m pip install .[test]
+        run: uv venv && uv pip install '.[test]' pytest-xdist
 
       - name: Run test suite
-        run: pytest -q
+        run: uv run pytest -q -n 3
 
       - name: Smoke test installed CLI
         run: |
-          mkdir -p /tmp/booz_xform_jax_cli
-          cp tests/test_files/booz_in.circular_tokamak /tmp/booz_xform_jax_cli/
-          cp tests/test_files/wout_circular_tokamak.nc /tmp/booz_xform_jax_cli/
-          cd /tmp/booz_xform_jax_cli
-          booz_xform_jax booz_in.circular_tokamak F
+          d="$(mktemp -d)"
+          cp tests/test_files/booz_in.circular_tokamak "$d"/
+          cp tests/test_files/wout_circular_tokamak.nc "$d"/
+          cd "$d"
+          "$GITHUB_WORKSPACE/.venv/bin/booz_xform_jax" booz_in.circular_tokamak F
           test -f boozmn_circular_tokamak.nc
+
+  gpu:
+    name: GPU
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, uwplasma-gpu]
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: false
+
+      - name: Install package with CUDA JAX
+        run: uv venv && uv pip install '.[test]' 'jax[cuda12]'
+
+      - name: Check GPU backend
+        run: uv run python -c "import jax; assert jax.default_backend()=='gpu', jax.devices()"
+
+      - name: GPU tests
+        timeout-minutes: 1
+        run: uv run pytest -m gpu -q -x
 
   docs:
     name: Docs
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Check out repository
