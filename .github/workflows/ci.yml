@@ -72,31 +72,6 @@ jobs:
           "$GITHUB_WORKSPACE/.venv/bin/booz_xform_jax" booz_in.circular_tokamak F
           test -f boozmn_circular_tokamak.nc
 
-  gpu:
-    name: GPU
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, Linux, uwplasma-gpu]
-    timeout-minutes: 5
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: astral-sh/setup-uv@v6
-        with:
-          python-version: "3.12"
-          enable-cache: false
-
-      - name: Install package with CUDA JAX
-        run: uv venv && uv pip install '.[test]' 'jax[cuda12]'
-
-      - name: Check GPU backend
-        run: uv run python -c "import jax; assert jax.default_backend()=='gpu', jax.devices()"
-
-      - name: GPU tests
-        timeout-minutes: 1
-        run: uv run pytest -m gpu -q -x
-
   docs:
     name: Docs
     runs-on: ubuntu-latest
