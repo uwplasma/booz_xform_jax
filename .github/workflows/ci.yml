@@ -37,8 +37,10 @@ jobs:
 
   test:
     name: Tests (Python ${{ matrix.python-version }})
-    # Fork PRs run on hosted Ubuntu, never on the self-hosted runners.
-    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && matrix.python-version == '3.12')) && fromJSON('["self-hosted","uwplasma-cpu"]') || 'ubuntu-latest' }}
+    # Fork PRs run on hosted Ubuntu, never on the self-hosted runners. The
+    # repository variable CI_RUNS_ON (JSON runner label or label list)
+    # overrides the default runner for same-repository runs.
+    runs-on: ${{ (vars.CI_RUNS_ON && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"')) || (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && matrix.python-version == '3.12')) && fromJSON('["self-hosted","uwplasma-cpu"]') || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       JAX_PLATFORM_NAME: cpu
@@ -66,11 +68,16 @@ jobs:
       - name: Smoke test installed CLI
         run: |
           d="$(mktemp -d)"
+          trap 'rm -rf "$d"' EXIT
           cp tests/test_files/booz_in.circular_tokamak "$d"/
           cp tests/test_files/wout_circular_tokamak.nc "$d"/
           cd "$d"
           "$GITHUB_WORKSPACE/.venv/bin/booz_xform_jax" booz_in.circular_tokamak F
           test -f boozmn_circular_tokamak.nc
+
+      - name: Remove the virtual environment
+        if: always()
+        run: rm -rf .venv
 
   docs:
     name: Docs
