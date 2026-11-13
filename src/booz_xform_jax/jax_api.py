@@ -243,7 +243,7 @@ def _resolve_surface_chunk(config: BoozerConfig,
     factor-four headroom for what XLA materializes alongside them. Host
     RSS is never consulted (it says nothing about accelerator capacity).
     """
-    if isinstance(config.surface_chunk, int):
+    if not isinstance(config.surface_chunk, str):
         chunk = min(int(config.surface_chunk), n_surfaces)
     elif config.memory_budget_bytes is None:
         chunk = n_surfaces
