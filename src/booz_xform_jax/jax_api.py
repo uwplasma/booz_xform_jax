@@ -762,8 +762,12 @@ def booz_xform_jax_impl(
                 a, ((0, pad),) + ((0, 0),) * (a.ndim - 1), mode="edge")
             return padded.reshape((n_chunks, chunk) + a.shape[1:])
 
+        # Checkpointing the block keeps reverse mode bounded by the chunk
+        # too: the backward pass recomputes each block's tables instead of
+        # storing them for every block.
         stacked = jax.lax.map(
-            lambda block: vmap_fn(*block), tuple(_blocked(a) for a in inputs))
+            jax.checkpoint(lambda block: vmap_fn(*block)),
+            tuple(_blocked(a) for a in inputs))
         outputs = tuple(
             o.reshape((n_chunks * chunk,) + o.shape[2:])[:n_surf]
             for o in stacked)
