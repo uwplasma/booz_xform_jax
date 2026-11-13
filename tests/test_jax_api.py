@@ -688,3 +688,19 @@ def test_projection_without_platform_dispatch(monkeypatch):
     monkeypatch.setattr(jax.lax, "platform_dependent", None, raising=False)
     np.testing.assert_array_equal(_project_modes(theta, fields),
                                   np.full((3, 4, 1), 2051.))
+
+
+@pytest.mark.parametrize("wout_name", ["wout_li383_1.4m.nc", "wout_up_down_asymmetric_tokamak.nc"])
+def test_run_jax_magnetic_only_matches_full_output(wout_name):
+    """The Booz_xform entry point forwards magnetic_only, jitted or not."""
+    b = Booz_xform()
+    b.read_wout(os.path.join(TEST_DIR, wout_name))
+    b.mboz = 6
+    b.nboz = 4
+    b.compute_surfs = [0, 5, 10]
+    full = b.run_jax(jit=False)
+    for jit in (False, True):
+        mag = b.run_jax(jit=jit, magnetic_only=True)
+        assert set(mag) == {"nfp_b", "ns_b", "ixm_b", "ixn_b", "iota_b", "buco_b", "bvco_b", "bmnc_b", "bmns_b", "jlist"}
+        for name in mag:
+            np.testing.assert_allclose(np.asarray(mag[name]), np.asarray(full[name]), rtol=5e-10, atol=5e-12)

@@ -1145,7 +1145,7 @@ class Booz_xform:
         self.Boozer_G = Boozer_G
         self.s_b = _np.asarray(self.s_in)[self.compute_surfs]
 
-    def run_jax(self, *, jit: bool = True) -> dict:
+    def run_jax(self, *, jit: bool = True, magnetic_only: bool = False) -> dict:
         """Run a JAX-native Boozer transform (no Python surface loop).
 
         This method returns a mapping compatible with boozmn field names.
@@ -1154,6 +1154,10 @@ class Booz_xform:
         ``asym`` is true.
         It is intended for end-to-end JIT/differentiable workflows and
         does not populate the instance attributes (unlike `run`).
+
+        ``magnetic_only=True`` returns only ``bmnc_b``, ``bmns_b``, the
+        ``buco_b``/``bvco_b`` currents and the mode/surface metadata; the
+        R, Z, nu and Jacobian spectra are not computed.
         """
         if self.rmnc is None or self.bmnc is None:
             raise RuntimeError("VMEC data must be initialised before running the transform")
@@ -1214,7 +1218,7 @@ class Booz_xform:
 
         booz_fn = booz_xform_jax_impl
         if jit:
-            booz_fn = jax.jit(booz_xform_jax_impl, static_argnames=("constants",))
+            booz_fn = jax.jit(booz_xform_jax_impl, static_argnames=("constants", "magnetic_only"))
 
         return booz_fn(
             rmnc=rmnc,
@@ -1237,6 +1241,7 @@ class Booz_xform:
             bsubumns=bsubumns,
             bsubvmns=bsubvmns,
             surface_indices=surface_indices,
+            magnetic_only=magnetic_only,
         )
 
     # ------------------------------------------------------------------
