@@ -5,6 +5,7 @@ on:
     branches:
       - main
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -15,6 +16,7 @@ env:
 
 jobs:
   smoke:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Smoke (hosted)
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') || 'ubuntu-latest' }}
     timeout-minutes: 15
@@ -40,11 +42,12 @@ jobs:
         run: rm -rf .venv
 
   test:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Tests (Python ${{ matrix.python-version }})
     # Fork PRs run on hosted Ubuntu, never on the self-hosted runners. The
     # repository variable CI_RUNS_ON (JSON runner label or label list)
     # overrides the default runner for same-repository runs.
-    runs-on: ${{ (vars.CI_RUNS_ON && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"')) || (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && matrix.python-version == '3.12')) && fromJSON('["self-hosted","uwplasma-cpu"]') || 'ubuntu-latest' }}
+    runs-on: ${{ (vars.CI_RUNS_ON && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"')) || (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && matrix.python-version == '3.12')) && fromJSON('["self-hosted","macOS","ARM64"]') || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       JAX_PLATFORM_NAME: cpu
@@ -84,6 +87,7 @@ jobs:
         run: rm -rf .venv
 
   docs:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Docs
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') || 'ubuntu-latest' }}
     timeout-minutes: 15
