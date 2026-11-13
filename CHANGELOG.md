@@ -2,6 +2,10 @@
 
 Releases before 0.4.0 are described in their GitHub release notes.
 
+## 0.5.2 - 2026-11-12
+
+- `Booz_xform.run_jax(jit=True, magnetic_only=True)` computes only `bmnc_b`, `bmns_b`, `buco_b`, `bvco_b`, `iota_b`, `jlist` and the mode metadata, skipping the R, Z, nu, p and Jacobian spectra. The default is unchanged.
+
 ## 0.5.0 - 2026-10-16
 
 - `booz_xform_jax.read_boozmn(path)` returns a boozmn file as a dict in the

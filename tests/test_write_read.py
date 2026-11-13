@@ -12,6 +12,8 @@ import os
 import numpy as np
 import unittest
 
+import tempfile
+
 from booz_xform_jax import Booz_xform
 
 # Alias for compatibility with the original test names
@@ -21,6 +23,12 @@ TEST_DIR = os.path.join(os.path.dirname(__file__), 'test_files')
 
 
 class WriteReadTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # Per-test directory so parallel (xdist) workers never share output files.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self._tmpdir = tmp.name
+
     def test_write_read(self) -> None:
         """Write a boozmn file and read it back into a new object."""
         configurations = [
@@ -32,7 +40,7 @@ class WriteReadTest(unittest.TestCase):
         for configuration in configurations:
             for compute_surfs in [[0], [0, 5], [5, 10, 15]]:
                 wout_filename = 'wout_' + configuration + '.nc'
-                boozmn_filename = os.path.join(TEST_DIR, f'boozmn_new_{configuration}.nc')
+                boozmn_filename = os.path.join(self._tmpdir, f'boozmn_new_{configuration}.nc')
                 b1 = Booz_xform()
                 # Test both flux and non‑flux reading
                 for flux in [True, False]:
