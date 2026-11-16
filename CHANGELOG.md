@@ -2,6 +2,11 @@
 
 Releases before 0.4.0 are described in their GitHub release notes.
 
+## 0.5.3 - 2026-11-16
+
+- With `surface_chunk` set, each block of surfaces is checkpointed, so reverse-mode memory is bounded by the chunk instead of the full surface selection (#24). The forward pass and the default `surface_chunk="auto"` path are unchanged.
+- `docs/numerics.rst` describes the CPU, GPU and multi-device defaults (#25).
+
 ## 0.5.2 - 2026-11-12
 
 - `Booz_xform.run_jax(jit=True, magnetic_only=True)` computes only `bmnc_b`, `bmns_b`, `buco_b`, `bvco_b`, `iota_b`, `jlist` and the mode metadata, skipping the R, Z, nu, p and Jacobian spectra. The default is unchanged.
