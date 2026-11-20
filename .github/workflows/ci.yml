@@ -36,15 +36,13 @@ jobs:
           python-version: "3.12"
           enable-cache: false
           activate-environment: true
+          venv-path: ${{ runner.temp }}/venv
 
       - name: Install package and test dependencies
         run: uv pip install .[test]
 
       - name: Run a fast test subset
         run: pytest -q -m gpu
-      - name: Remove the virtual environment
-        if: always()
-        run: rm -rf .venv
 
   test:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
@@ -73,8 +71,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: false
 
+      - name: Select the job environment
+        run: |
+          echo "VIRTUAL_ENV=$RUNNER_TEMP/venv" >> "$GITHUB_ENV"
+          echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/venv" >> "$GITHUB_ENV"
       - name: Install package and test dependencies
-        run: uv venv && uv pip install '.[test]' pytest-xdist
+        run: uv venv "$VIRTUAL_ENV" && uv pip install '.[test]' pytest-xdist
 
       - name: Run test suite
         run: uv run pytest -q -n 3
@@ -86,12 +88,9 @@ jobs:
           cp tests/test_files/booz_in.circular_tokamak "$d"/
           cp tests/test_files/wout_circular_tokamak.nc "$d"/
           cd "$d"
-          "$GITHUB_WORKSPACE/.venv/bin/booz_xform_jax" booz_in.circular_tokamak F
+          "$VIRTUAL_ENV/bin/booz_xform_jax" booz_in.circular_tokamak F
           test -f boozmn_circular_tokamak.nc
 
-      - name: Remove the virtual environment
-        if: always()
-        run: rm -rf .venv
 
   docs:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
@@ -110,12 +109,10 @@ jobs:
           python-version: "3.12"
           enable-cache: false
           activate-environment: true
+          venv-path: ${{ runner.temp }}/venv
 
       - name: Install package and docs dependencies
         run: uv pip install .[docs]
 
       - name: Build documentation with warnings as errors
         run: python -m sphinx -W --keep-going -b html docs docs/_build/html
-      - name: Remove the virtual environment
-        if: always()
-        run: rm -rf .venv
